@@ -41,16 +41,15 @@ class CameraService : Service(), LifecycleOwner {
 
     object CameraServiceActions {
         const val ACTION_START_RECORDING = "com.example.camy.action.START_RECORDING"
-        const val ACTION_STOP_RECORDING  = "com.example.camy.action.STOP_RECORDING"
-        const val ACTION_TOGGLE_FLASH    = "com.example.camy.action.TOGGLE_FLASH"
-        const val ACTION_CAPTURE_PHOTO   = "com.example.camy.action.CAPTURE_PHOTO"
+        const val ACTION_STOP_RECORDING = "com.example.camy.action.STOP_RECORDING"
+        const val ACTION_TOGGLE_FLASH = "com.example.camy.action.TOGGLE_FLASH"
+        const val ACTION_CAPTURE_PHOTO = "com.example.camy.action.CAPTURE_PHOTO"
     }
 
     override fun onCreate() {
         super.onCreate()
         serviceLifecycleOwner.handleOnCreate()
 
-        // Foreground notification
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
 
@@ -101,9 +100,8 @@ class CameraService : Service(), LifecycleOwner {
             cameraProvider.unbindAll()
 
             // Preparamos un Recorder
-            val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.HD))
-                .build()
+            val recorder =
+                Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD)).build()
             videoCapture = VideoCapture.withOutput(recorder)
 
             // Preparamos un ImageCapture (opcional)
@@ -113,10 +111,7 @@ class CameraService : Service(), LifecycleOwner {
 
             try {
                 val camera = cameraProvider.bindToLifecycle(
-                    serviceLifecycleOwner,
-                    cameraSelector,
-                    videoCapture,
-                    imageCapture
+                    serviceLifecycleOwner, cameraSelector, videoCapture, imageCapture
                 )
                 cameraControl = camera.cameraControl
 
@@ -138,26 +133,24 @@ class CameraService : Service(), LifecycleOwner {
         }
         val videoUri = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val outputOptions = MediaStoreOutputOptions.Builder(contentResolver, videoUri)
-            .setContentValues(contentValues)
-            .build()
+            .setContentValues(contentValues).build()
 
         try {
-            activeRecording = videoCapture?.output
-                ?.prepareRecording(this, outputOptions)
-                ?.withAudioEnabled()
-                ?.start(ContextCompat.getMainExecutor(this)) { event ->
-                    when (event) {
-                        is VideoRecordEvent.Start -> {
-                            isRecording = true
-                            Log.d(TAG, "Grabación iniciada (Service)")
+            activeRecording =
+                videoCapture?.output?.prepareRecording(this, outputOptions)?.withAudioEnabled()
+                    ?.start(ContextCompat.getMainExecutor(this)) { event ->
+                        when (event) {
+                            is VideoRecordEvent.Start -> {
+                                isRecording = true
+                                Log.d(TAG, "Grabación iniciada (Service)")
+                            }
+                            is VideoRecordEvent.Finalize -> {
+                                isRecording = false
+                                Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
+                            }
+                            else -> {}
                         }
-                        is VideoRecordEvent.Finalize -> {
-                            isRecording = false
-                            Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
-                        }
-                        else -> {}
                     }
-                }
         } catch (se: SecurityException) {
             Log.e(TAG, "SecurityException al grabar: ${se.message}", se)
         }
@@ -183,51 +176,22 @@ class CameraService : Service(), LifecycleOwner {
             }
         }
         val outputUri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val outputOptions = ImageCapture.OutputFileOptions
-            .Builder(contentResolver, outputUri, contentValues)
-            .build()
+        val outputOptions =
+            ImageCapture.OutputFileOptions.Builder(contentResolver, outputUri, contentValues)
+                .build()
 
-        imageCapture?.takePicture(
-            outputOptions,
+        imageCapture?.takePicture(outputOptions,
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     Log.d(TAG, "Foto guardada en: $outputUri")
                 }
+
                 override fun onError(exception: ImageCaptureException) {
                     Log.e(TAG, "Error al guardar foto: ${exception.message}", exception)
                 }
-            }
-        )
+            })
     }
-
-    private fun toggleFlash() {
-        if (cameraControl == null) {
-            Log.w(TAG, "toggleFlash: cameraControl es null")
-            return
-        }
-        isFlashOn = !isFlashOn
-        cameraControl?.enableTorch(isFlashOn)
-        Log.d(TAG, "Flash -> $isFlashOn")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        serviceLifecycleOwner.handleOnDestroy()
-
-        stopRecordingVideo()
-
-        // Emitir broadcast de “Service detenido”
-        val bcIntent = Intent(ACTION_SERVICE_STOPPED)
-        sendBroadcast(bcIntent)
-
-        wakeLock?.release()
-        wakeLock = null
-        cameraExecutor.shutdown()
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-    override fun getLifecycle() = serviceLifecycleOwner.lifecycle
 
     private fun createNotification(): Notification {
         val channelId = "camera_service_channel"
@@ -259,11 +223,37 @@ class CameraService : Service(), LifecycleOwner {
     }
 
 
+    private fun toggleFlash() {
+        if (cameraControl == null) {
+            Log.w(TAG, "toggleFlash: cameraControl es null")
+            return
+        }
+        isFlashOn = !isFlashOn
+        cameraControl?.enableTorch(isFlashOn)
+        Log.d(TAG, "Flash -> $isFlashOn")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceLifecycleOwner.handleOnDestroy()
+
+        stopRecordingVideo()
+
+        // Emitir broadcast de “Service detenido”
+        val bcIntent = Intent(ACTION_SERVICE_STOPPED)
+        sendBroadcast(bcIntent)
+
+        wakeLock?.release()
+        wakeLock = null
+        cameraExecutor.shutdown()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+    override fun getLifecycle() = serviceLifecycleOwner.lifecycle
+
     companion object {
         private const val TAG = "CameraService"
         private const val NOTIFICATION_ID = 123
         const val ACTION_SERVICE_STOPPED = "com.example.camy.ACTION_SERVICE_STOPPED"
     }
 }
-
-

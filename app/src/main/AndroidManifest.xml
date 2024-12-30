@@ -26,7 +26,8 @@
         </activity>
         <service
             android:name=".CameraService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="camera|microphone" />
 
     </application>
 
