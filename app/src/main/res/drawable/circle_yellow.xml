@@ -1,0 +1,7 @@
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#88FFFF00" /> <!-- Rojo para grabación -->
+    <corners android:radius="50dp" />
+    <size
+        android:width="64dp"
+        android:height="64dp" />
+</shape>

@@ -1,0 +1,8 @@
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#66000000"> <!-- Color del ripple (más opaco) -->
+    <item android:id="@android:id/mask">
+        <shape android:shape="oval"> <!-- Forma circular del efecto -->
+            <solid android:color="#000000" />
+        </shape>
+    </item>
+</ripple>

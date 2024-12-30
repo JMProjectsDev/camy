@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Camy</string>
+    <string name="video_opt">Video</string>
+    <string name="photo_opt">Foto</string>
+    <string name="swap_video">Cambiar a modo video</string>
+    <string name="make_video_photo">Capturar video o foto</string>
+    <string name="open_gallery">Abrir galería</string>
+    <string name="torch">Linterna</string>
+</resources>
