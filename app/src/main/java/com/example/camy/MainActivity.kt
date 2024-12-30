@@ -1,244 +1,258 @@
 package com.example.camy
 
-import android.app.AlertDialog
-import android.content.ContentValues
-import android.content.Intent
+import android.Manifest
+import android.content.*
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.provider.MediaStore.Audio.Media
 import android.util.Log
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.CameraControl
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.*
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
+    // === Vistas de la UI ===
     private lateinit var previewView: PreviewView
     private lateinit var btnFlash: ImageButton
     private lateinit var btnGallery: ImageButton
     private lateinit var btnCapture: ImageView
     private lateinit var btnToggleMode: ImageView
 
-    private var isPhotoMode = true // Modo inicial: Foto
-    private var isRecording = false;
-    private var activeRecording: Recording? = null
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var cameraControl: CameraControl? = null
-    private var isFlashOn = false // Estado inicial del flash
+    // === Estados ===
+    private var isPhotoMode = true
+    private var isRecording = false
+    private var isFlashOn = false
+
+    // === CameraX en la Activity para FOTOS ===
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var previewUseCase: Preview? = null
     private var imageCapture: ImageCapture? = null
+    private var cameraControl: CameraControl? = null
 
-    private val permissionsToRequest = getRequiredPermissions()
-
+    // === Permisos ===
+    private val REQUEST_CODE_PERMISSIONS = 10
     private fun getRequiredPermissions(): Array<String> {
         val permissions = mutableListOf(
-            android.Manifest.permission.CAMERA,
-            android.Manifest.permission.RECORD_AUDIO
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO
         )
-        // Si es Android 9 o anterior, hay que pedir WRITE_EXTERNAL_STORAGE
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            permissions.add(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
         return permissions.toTypedArray()
     }
-
-    private val REQUEST_CODE_PERMISSIONS = 10
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-
+        // 1) Referencias a vistas
         previewView = findViewById(R.id.previewView)
         btnFlash = findViewById(R.id.btnFlash)
         btnGallery = findViewById(R.id.btnGallery)
         btnCapture = findViewById(R.id.btnCapture)
         btnToggleMode = findViewById(R.id.btnToggleMode)
 
-        // Para que los botones tengan las dimensiones correctas
-        initializeButtonIcons()
-
-        // Verificar permisos
-        if (allPermissionsGranted(permissionsToRequest)) {
-            startCamera()
+        // 2) Verificar permisos
+        val requiredPermissions = getRequiredPermissions()
+        if (!allPermissionsGranted(requiredPermissions)) {
+            ActivityCompat.requestPermissions(this, requiredPermissions, REQUEST_CODE_PERMISSIONS)
         } else {
-            ActivityCompat.requestPermissions(
-                this, permissionsToRequest, REQUEST_CODE_PERMISSIONS
-            )
+            // Si ya tenemos permisos, iniciamos la preview para FOTOS
+            startPreviewInActivity()
         }
 
-        // Alternar entre foto y video
-        btnToggleMode.setOnClickListener {
-            if (isRecording) {
-                stopRecordingVideo()
+        // === Botón de Flash ===
+        btnFlash.setOnClickListener {
+            isFlashOn = !isFlashOn
+
+            // Actualizar icono de UI
+            val iconRes = if (isFlashOn) R.drawable.ic_flash_on else R.drawable.ic_flash_off
+            val iconBack = if (isFlashOn) R.drawable.circle_yellow else R.drawable.circle_button_small
+            btnFlash.setBackgroundResource(iconBack)
+            btnFlash.setImageResource(iconRes)
+
+            if (isPhotoMode) {
+                // Si estamos en MODO FOTO, encendemos/apagamos flash localmente
+                toggleFlashForPhoto(isFlashOn)
+            } else {
+                // Si estamos en MODO VIDEO (background Service), avisamos al servicio
+                val intent = Intent(this, CameraService::class.java).apply {
+                    action = CameraService.CameraServiceActions.ACTION_TOGGLE_FLASH
+                }
+                startService(intent)
             }
+        }
+
+        // === Botón de galería ===
+        btnGallery.setOnClickListener {
+            openGallery()
+        }
+
+        // === Botón central de captura (FOTO o VIDEO) ===
+        btnCapture.setOnClickListener {
+            if (isPhotoMode) {
+                // == Tomar foto en la Activity ==
+                capturePhoto()
+
+            } else {
+                // == Grabar video en el Service ==
+                if (!isRecording) {
+                    // 1) Soltamos la cámara en la Activity (no podemos usarla en paralelo)
+                    stopPreviewInActivity()
+
+                    // 2) Iniciar grabación en el Service
+                    val intent = Intent(this, CameraService::class.java).apply {
+                        action = CameraService.CameraServiceActions.ACTION_START_RECORDING
+                    }
+                    ContextCompat.startForegroundService(this, intent)
+
+                    // 3) Actualizar UI local
+                    isRecording = true
+                    btnCapture.setImageResource(R.drawable.ic_stop)
+                    animateIconSize(btnCapture, 22)
+                    btnCapture.setBackgroundResource(R.drawable.circle_red)
+
+                } else {
+                    // Detener grabación
+                    val intent = Intent(this, CameraService::class.java).apply {
+                        action = CameraService.CameraServiceActions.ACTION_STOP_RECORDING
+                    }
+                    startService(intent)
+
+                    // Restablecer icono UI
+                    isRecording = false
+                    btnCapture.setImageResource(R.drawable.ic_video)
+                    animateIconSize(btnCapture, 38)
+                    btnCapture.setBackgroundResource(R.drawable.circle_button_large)
+                }
+            }
+        }
+
+        // === Botón para cambiar modo (foto/video) ===
+        btnToggleMode.setOnClickListener {
+            // Si está grabando en video, lo detenemos primero
+            if (isRecording) {
+                val intent = Intent(this, CameraService::class.java).apply {
+                    action = CameraService.CameraServiceActions.ACTION_STOP_RECORDING
+                }
+                startService(intent)
+                isRecording = false
+            }
+
+            // Toggle local (FOTO <-> VIDEO)
             isPhotoMode = !isPhotoMode
             updateUIForMode()
         }
 
-        // Capturar foto o grabar video
-        btnCapture.setOnClickListener {
-            if (isPhotoMode) {
-                capturePhoto()
-            } else {
-                if (isRecording) {
-                    stopRecordingVideo()
-                } else {
-                    startRecordingVideo()
-                }
-            }
-        }
-
-        // Configurar linterna
-        btnFlash.setOnClickListener {
-            toggleFlash()
-        }
-
-        // Abrir galería
-        btnGallery.setOnClickListener {
-            openGallery()
-        }
+        // Arranque inicial de la UI
+        updateUIForMode()
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 1002 && resultCode == RESULT_OK) {
-            val selectedImageUri = data?.data
-            Log.d("Gallery", "Imagen seleccionada: $selectedImageUri")
-        }
+    // === Ciclo de vida: Registrar y des-registrar el BroadcastReceiver ===
+    override fun onResume() {
+        super.onResume()
+        val filter = IntentFilter(CameraService.ACTION_SERVICE_STOPPED)
+        registerReceiver(serviceStoppedReceiver, filter)
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
-        if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            if (allPermissionsGranted(permissionsToRequest)) {
-                Log.d("PermissionsCheck", "Permisos otorgados, iniciando cámara.")
-                startCamera()
-            } else {
-                Log.d("PermissionsCheck", "Permisos rechazados.")
-                // Verifica si el usuario denegó permisos permanentemente
-                val somePermissionsDeniedForever = permissions.indices.any { i ->
-                    grantResults[i] == PackageManager.PERMISSION_DENIED &&
-                            !ActivityCompat.shouldShowRequestPermissionRationale(
-                                this,
-                                permissions[i]
-                            )
-                }
-
-                if (somePermissionsDeniedForever) {
-                    Log.d("PermissionsCheck", "Permisos denegados permanentemente.")
-                    showPermissionDeniedDialog()
-                } else {
-                    Log.d("PermissionsCheck", "Permisos rechazados temporalmente.")
-                    Toast.makeText(
-                        this,
-                        "Los permisos son necesarios para usar la aplicación.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-        }
+    override fun onPause() {
+        super.onPause()
+        unregisterReceiver(serviceStoppedReceiver)
     }
 
-    private fun startCamera() {
+    // ============= PHOTO MODE: PREVIEW, CAPTURE & FLASH =============
+
+    /** Inicia la preview para tomar fotos en la Activity. */
+    private fun startPreviewInActivity() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-
         cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
+            cameraProvider = cameraProviderFuture.get()
+            cameraProvider?.unbindAll()
 
-            // Configura el Preview
-            val preview = androidx.camera.core.Preview.Builder()
-                .build()
-                .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+            // 1) Creamos el Preview
+            val preview = Preview.Builder().build()
+            previewUseCase = preview
 
-            imageCapture = ImageCapture.Builder()
-                .build()
+            // 2) Creamos el ImageCapture
+            val imgCapture = ImageCapture.Builder().build()
+            imageCapture = imgCapture
 
-            // Configura el Recorder y el VideoCapture
-            val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.HD))
-                .build()
-
-            videoCapture = VideoCapture.withOutput(recorder)
-
-            // Selecciona la cámara trasera
+            // 3) Bind a la cámara trasera
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
             try {
-                // Desvincula cualquier caso de uso anterior y vincula los nuevos
-                cameraProvider.unbindAll()
-                val camera = cameraProvider.bindToLifecycle(
-                    this,
+                val camera = cameraProvider?.bindToLifecycle(
+                    this, // LifecycleOwner = Activity
                     cameraSelector,
                     preview,
-                    videoCapture,
-                    imageCapture
+                    imgCapture
                 )
-                // Asignar cameraControl sino el flash no funcionará
-                cameraControl = camera.cameraControl
+                // 4) Manejamos cameraControl para flash local
+                cameraControl = camera?.cameraControl
 
+                // 5) Conectamos el preview al PreviewView
+                preview.setSurfaceProvider(previewView.surfaceProvider)
+
+                Log.d("MainActivity", "Preview de fotos iniciada.")
             } catch (e: Exception) {
-                Log.e("CameraX", "Error al abrir la cámara", e)
+                Log.e("MainActivity", "No se pudo iniciar preview: ${e.message}", e)
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun capturePhoto() {
-        Log.d("CameraX", "Capturando foto...")
+    /** Para la preview si vamos a ceder la cámara al Service. */
+    private fun stopPreviewInActivity() {
+        try {
+            cameraProvider?.unbindAll()
+            cameraProvider = null
+            previewUseCase = null
+            imageCapture = null
+            cameraControl = null
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error al soltar la cámara de preview: ${e.message}")
+        }
+    }
 
-        // 1) Contenido y metadatos para la foto
+    /** Toma una foto localmente (modo foto). */
+    private fun capturePhoto() {
+        val imgCapture = imageCapture ?: return
+        Log.d("MainActivity", "Capturando foto en la Activity...")
+
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, "photo_${System.currentTimeMillis()}.jpg")
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Photos")
             }
         }
-
-
-        // 2) Uri de destino en MediaStore
         val outputUri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-
-        // 3) Configurar las opciones de salida para ImageCapture
         val outputOptions = ImageCapture.OutputFileOptions
-            .Builder(contentResolver, outputUri!!, contentValues)
+            .Builder(contentResolver, outputUri, contentValues)
             .build()
 
-        // 4) Tomar la foto
-        imageCapture?.takePicture(
+        imgCapture.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    Log.d("CameraX", "Foto guardada en: $outputUri")
+                    Log.d("MainActivity", "Foto guardada correctamente")
                     Toast.makeText(
                         this@MainActivity,
-                        "Foto guardada: $outputUri",
+                        "Foto guardada correctamente",
                         Toast.LENGTH_LONG
                     ).show()
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    Log.e("CameraX", "Error al guardar foto: ${exception.message}", exception)
+                    Log.e("MainActivity", "Error al guardar foto: ${exception.message}", exception)
                     Toast.makeText(
                         this@MainActivity,
                         "Error al capturar foto: ${exception.message}",
@@ -249,129 +263,54 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun startRecordingVideo() {
-        Log.d("CameraX", "Iniciando grabación de video...")
-        val intent = Intent(this, CameraService::class.java)
-        ContextCompat.startForegroundService(this, intent);
+    /** Activa/desactiva flash localmente mientras estamos en modo foto. */
+    private fun toggleFlashForPhoto(enable: Boolean) {
+        // Solo si la cámara está en la Activity
+        if (cameraControl == null) {
+            Log.w("MainActivity", "toggleFlashForPhoto: cameraControl es null (no hay cámara en la Activity).")
+            return
+        }
+        cameraControl?.enableTorch(enable)
+        Log.d("MainActivity", "Flash foto -> $enable")
+    }
 
-        // 1) Preparamos los metadatos
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "video_${System.currentTimeMillis()}.mp4")
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+    // ============= VIDEO MODE: BROADCAST RECEIVER =============
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Movies/CameraX-Videos")
+    /**
+     * Recibe la notificación de que el Service se detuvo (ACTION_SERVICE_STOPPED).
+     * Con ello, volvemos a tomar la cámara localmente para el modo foto.
+     */
+    private val serviceStoppedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == CameraService.ACTION_SERVICE_STOPPED) {
+                Log.d("MainActivity", "Recibido ACTION_SERVICE_STOPPED del Service.")
+                // Volver a tomar la cámara en la Activity (por si queremos fotos)
+                startPreviewInActivity()
             }
         }
-
-        // 2) Generamos MediaStoreOutputOptions
-        val videoUri = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val mediaStoreOutputOptions = MediaStoreOutputOptions
-            .Builder(contentResolver, videoUri)
-            .setContentValues(contentValues)
-            .build()
-
-        // 3) Iniciamos grabación con .prepareRecording(...) y .start(...)
-        try {
-            activeRecording = videoCapture?.output
-                ?.prepareRecording(this, mediaStoreOutputOptions)
-                ?.withAudioEnabled()
-                ?.start(ContextCompat.getMainExecutor(this)) { event ->
-                    when (event) {
-                        is VideoRecordEvent.Start -> {
-                            Log.d("CameraX", "Grabación iniciada")
-                            isRecording = true
-                            btnCapture.setImageResource(R.drawable.ic_stop)
-                            animateIconSize(btnCapture, 22)
-                            btnCapture.setBackgroundResource(R.drawable.circle_red)
-                        }
-                        is VideoRecordEvent.Finalize -> {
-                            Log.d(
-                                "CameraX",
-                                "Grabación finalizada: ${event.outputResults.outputUri}"
-                            )
-                            isRecording = false
-                            btnCapture.setImageResource(R.drawable.ic_video)
-                            animateIconSize(btnCapture, 38)
-                            btnCapture.setBackgroundResource(R.drawable.circle_button_large)
-
-                            Toast.makeText(
-                                this,
-                                "Video guardado: ${event.outputResults.outputUri}",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                        is VideoRecordEvent.Status -> {
-                            // eventos intermedios
-                        }
-                        else -> Log.w("CameraX", "Evento desconocido: $event")
-                    }
-                }
-        } catch (e: SecurityException) {
-            Log.e("CameraX", "Permiso rechazado: ${e.message}")
-        }
     }
 
-    private fun stopRecordingVideo() {
-        Log.d("CameraX", "Deteniendo grabación de video...")
-        isRecording = false
-        stopService(Intent(this, CameraService::class.java))
-
-        // Cambiar icono y tamaño de botón
-        btnCapture.setImageResource(R.drawable.ic_video)
-        animateIconSize(btnCapture, 38)
-        btnCapture.setBackgroundResource(R.drawable.circle_button_large)
-
-        activeRecording?.stop() // Finaliza la grabación pendiente
-        activeRecording = null
-    }
-
-    private fun toggleFlash() {
-        if (cameraControl != null) {
-            isFlashOn = !isFlashOn
-            cameraControl?.enableTorch(isFlashOn)
-            btnFlash.apply {
-                if (isFlashOn) {
-                    setBackgroundResource(R.drawable.circle_yellow)
-                } else {
-                    setBackgroundResource(R.drawable.circle_button_small)
-                }
-                setImageResource(
-                    if (isFlashOn) R.drawable.ic_flash_on else R.drawable.ic_flash_off
-                )
-            }
-        } else {
-            Log.w("CameraX", "La cámara no está inicializada.")
-        }
-    }
+    // ============= GALERÍA, PERMISOS, UI, ETC. =============
 
     private fun openGallery() {
-        val intent = Intent(Intent.ACTION_VIEW)
-        intent.type = "image/*" // MIME type para imágenes
-        intent.flags =
-            Intent.FLAG_ACTIVITY_NEW_TASK // Asegura que la galería se abra como una nueva tarea
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            type = "image/*"
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
         startActivity(intent)
     }
 
+    /** Actualiza la UI según estemos en modo foto o video */
     private fun updateUIForMode() {
-        // Si se está grabando, detener la grabación
-        if (isRecording) {
-            stopRecordingVideo()
-        }
-
         if (isPhotoMode) {
             btnCapture.setImageResource(R.drawable.ic_photo)
             btnToggleMode.setImageResource(R.drawable.ic_video)
-
-            // Cambiar el tamaño del icono dinámicamente
             animateIconSize(btnCapture, 38)
             animateIconSize(btnToggleMode, 22)
             btnCapture.setBackgroundResource(R.drawable.circle_button_large)
         } else {
             btnCapture.setImageResource(R.drawable.ic_video)
             btnToggleMode.setImageResource(R.drawable.ic_photo)
-
-            // Cambiar el tamaño del icono dinámicamente
             animateIconSize(btnCapture, 38)
             animateIconSize(btnToggleMode, 22)
             btnCapture.setBackgroundResource(R.drawable.circle_button_large)
@@ -381,40 +320,38 @@ class MainActivity : AppCompatActivity() {
     private fun animateIconSize(view: ImageView, iconSizeDp: Int) {
         val iconSizePx = (iconSizeDp * resources.displayMetrics.density).toInt()
         val viewSize = view.layoutParams.width
-
-        // Verificar que el tamaño del botón sea válido
         if (viewSize > 0) {
             val padding = (viewSize - iconSizePx) / 2
             view.setPadding(padding, padding, padding, padding)
         }
     }
 
-    /** FUNCIONES PARA INICIALIZAR LA APLICACION CORRECTAMENTE **/
-    private fun initializeButtonIcons() {
-        animateIconSize(btnCapture, 38) // Tamaño inicial grande
-        animateIconSize(btnToggleMode, 22) // Tamaño inicial pequeño
-    }
+    // ============= PERMISOS Y RESULTADOS =============
 
-    private fun allPermissionsGranted(perms: Array<String>): Boolean {
-        return perms.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE_PERMISSIONS) {
+            val someDenied = grantResults.any { it == PackageManager.PERMISSION_DENIED }
+            if (someDenied) {
+                Toast.makeText(
+                    this,
+                    "Es necesario conceder permisos para usar la app",
+                    Toast.LENGTH_LONG
+                ).show()
+                finish()
+            } else {
+                // Permisos concedidos
+                startPreviewInActivity()
+            }
         }
     }
 
-    private fun showPermissionDeniedDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("Permisos necesarios")
-            .setMessage("Los permisos son necesarios para usar la cámara y grabar audio. Por favor, actívalos manualmente en la configuración de la aplicación.")
-            .setPositiveButton("Abrir configuración") { _, _ ->
-                val intent = Intent(
-                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:$packageName")
-                )
-                startActivity(intent)
-            }
-            .setNegativeButton("Salir") { _, _ ->
-                finish()
-            }
-            .show()
-    }
+    private fun allPermissionsGranted(perms: Array<String>) =
+        perms.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
 }
