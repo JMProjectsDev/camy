@@ -342,13 +342,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun orientationToSurfaceRotation(orientation: Int): Int {
-        return when {
-            orientation in 45..134 -> Surface.ROTATION_90
-            orientation in 135..224 -> Surface.ROTATION_180
-            orientation in 225..314 -> Surface.ROTATION_270
-            else -> Surface.ROTATION_0
+        return when (orientation) {
+            in 315..359, in 0..44   -> Surface.ROTATION_0
+            in 45..134              -> Surface.ROTATION_90
+            in 135..224             -> Surface.ROTATION_180
+            in 225..314             -> Surface.ROTATION_270
+            else                    -> Surface.ROTATION_0
         }
     }
+
 
     private fun updateFlashUI(isOn: Boolean) {
         val iconRes = if (isOn) R.drawable.ic_flash_on else R.drawable.ic_flash_off
