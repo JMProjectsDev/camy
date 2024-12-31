@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.util.Log
+import android.view.Surface
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -67,6 +68,10 @@ class CameraService : Service(), LifecycleOwner {
         serviceLifecycleOwner.handleOnStart()
 
         when (intent?.action) {
+            "com.example.camy.ACTION_ROTATION_CHANGED" -> {
+                val newRotation = intent.getIntExtra("VIDEO_ROTATION", Surface.ROTATION_0)
+                videoCapture?.targetRotation = newRotation
+            }
             CameraServiceActions.ACTION_START_RECORDING -> {
                 if (!isRecording) {
                     startCameraAndRecording()
@@ -128,7 +133,7 @@ class CameraService : Service(), LifecycleOwner {
             put(MediaStore.MediaColumns.DISPLAY_NAME, "video_${System.currentTimeMillis()}.mp4")
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/CameraX-Videos")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos")
             }
         }
         val videoUri = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -136,6 +141,9 @@ class CameraService : Service(), LifecycleOwner {
             .setContentValues(contentValues).build()
 
         try {
+            // 1) Fijar rotación
+            videoCapture?.targetRotation = Surface.ROTATION_0
+
             activeRecording =
                 videoCapture?.output?.prepareRecording(this, outputOptions)?.withAudioEnabled()
                     ?.start(ContextCompat.getMainExecutor(this)) { event ->
@@ -151,6 +159,7 @@ class CameraService : Service(), LifecycleOwner {
                             else -> {}
                         }
                     }
+
         } catch (se: SecurityException) {
             Log.e(TAG, "SecurityException al grabar: ${se.message}", se)
         }
@@ -172,7 +181,7 @@ class CameraService : Service(), LifecycleOwner {
             put(MediaStore.MediaColumns.DISPLAY_NAME, "photo_${System.currentTimeMillis()}.jpg")
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Photos")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camy-Photos")
             }
         }
         val outputUri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -203,25 +212,19 @@ class CameraService : Service(), LifecycleOwner {
                 NotificationManager.IMPORTANCE_LOW // o IMPORTANCE_DEFAULT
             ).apply {
                 // Control de visibilidad si quieres forzar lo público en lock screen
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             }
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
         }
 
-        val builder = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Grabando video...")
-            .setContentText("La aplicación está usando la cámara en segundo plano.")
-            .setSmallIcon(R.drawable.ic_video)
-            .setOngoing(true) // Notificación persistente
-            .setPriority(NotificationCompat.PRIORITY_LOW) // Equivale a IMPORTANCE_LOW en Oreo-
-
-            // Solo funciona en Android 5.0+ (Lollipop) y si lo permites:
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        val builder =
+            NotificationCompat.Builder(this, channelId).setOngoing(true) // Notificación persistente
+                .setPriority(NotificationCompat.PRIORITY_LOW) // Equivale a IMPORTANCE_LOW en Oreo-
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
 
         return builder.build()
     }
-
 
     private fun toggleFlash() {
         if (cameraControl == null) {

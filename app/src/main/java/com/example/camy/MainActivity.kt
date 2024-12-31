@@ -2,11 +2,15 @@ package com.example.camy
 
 import android.Manifest
 import android.content.*
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import android.view.OrientationEventListener
+import android.view.Surface
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.Toast
@@ -14,6 +18,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
@@ -36,6 +41,8 @@ class MainActivity : AppCompatActivity() {
     private var imageCapture: ImageCapture? = null
     private var cameraControl: CameraControl? = null
 
+    private lateinit var orientationListener: OrientationEventListener
+
     // Permisos
     private val REQUEST_CODE_PERMISSIONS = 10
     private fun getRequiredPermissions(): Array<String> {
@@ -52,6 +59,22 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // Ahora dentro de onCreate, ya se puede usar this para getSystemService
+        orientationListener = object : OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) return
+                val newRotation = orientationToSurfaceRotation(orientation)
+
+                // Enviar la rotación al Service para que NO reinicie la cámara
+                val intent = Intent(this@MainActivity, CameraService::class.java).apply {
+                    action = "com.example.camy.ACTION_ROTATION_CHANGED"
+                    putExtra("VIDEO_ROTATION", newRotation)
+                }
+                startService(intent)
+            }
+        }
+        orientationListener.enable()
+
         previewView = findViewById(R.id.previewView)
         btnFlash = findViewById(R.id.btnFlash)
         btnGallery = findViewById(R.id.btnGallery)
@@ -62,28 +85,28 @@ class MainActivity : AppCompatActivity() {
         if (!allPermissionsGranted(requiredPermissions)) {
             ActivityCompat.requestPermissions(this, requiredPermissions, REQUEST_CODE_PERMISSIONS)
         } else {
-            // Si ya tenemos permisos, iniciamos la preview para FOTOS
             startPreviewInActivity()
         }
 
         btnFlash.setOnClickListener {
-            isFlashOn = !isFlashOn
-
-            val iconRes = if (isFlashOn) R.drawable.ic_flash_on else R.drawable.ic_flash_off
-            val iconBack =
-                if (isFlashOn) R.drawable.circle_yellow else R.drawable.circle_button_small
-            btnFlash.setBackgroundResource(iconBack)
-            btnFlash.setImageResource(iconRes)
-
             if (isPhotoMode) {
-                // Si estamos en MODO FOTO, encendemos/apagamos flash tipo modo linterna
+                isFlashOn = !isFlashOn
+                updateFlashUI(isFlashOn)
                 toggleFlashForPhoto(isFlashOn)
             } else {
-                // Si estamos en MODO VIDEO (background Service), avisamos al servicio
-                val intent = Intent(this, CameraService::class.java).apply {
-                    action = CameraService.CameraServiceActions.ACTION_TOGGLE_FLASH
+                if (!isRecording) {
+                    Toast.makeText(this,"Debes iniciar la grabación para usar la linterna",
+                        Toast.LENGTH_SHORT).show()
+                } else {
+                    // Linterna en modo video GRABANDO
+                    isFlashOn = !isFlashOn
+                    updateFlashUI(isFlashOn)
+
+                    val intent = Intent(this, CameraService::class.java).apply {
+                        action = CameraService.CameraServiceActions.ACTION_TOGGLE_FLASH
+                    }
+                    startService(intent)
                 }
-                startService(intent)
             }
         }
 
@@ -96,25 +119,33 @@ class MainActivity : AppCompatActivity() {
                 capturePhoto()
             } else {
                 if (!isRecording) {
-                    stopPreviewInActivity()
+                    // Bloquea la orientación actual
+                    lockCurrentOrientation()
 
-                    // Grabacion en el service
+                    stopPreviewInActivity()
                     val intent = Intent(this, CameraService::class.java).apply {
                         action = CameraService.CameraServiceActions.ACTION_START_RECORDING
                     }
                     ContextCompat.startForegroundService(this, intent)
 
                     isRecording = true
+                    btnFlash.isEnabled = true
                     btnCapture.setImageResource(R.drawable.ic_stop)
                     animateIconSize(btnCapture, 22)
                     btnCapture.setBackgroundResource(R.drawable.circle_red)
-
                 } else {
-                    // Detener grabacion
+                    // STOP RECORDING
                     val intent = Intent(this, CameraService::class.java).apply {
                         action = CameraService.CameraServiceActions.ACTION_STOP_RECORDING
                     }
                     startService(intent)
+
+                    // Forzar linterna apagada
+                    isFlashOn = false
+                    updateFlashUI(false)
+
+                    // Libera la orientación para permitir giro de nuevo
+                    unlockOrientation()
 
                     isRecording = false
                     btnCapture.setImageResource(R.drawable.ic_video)
@@ -125,7 +156,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnToggleMode.setOnClickListener {
-            // Si está grabando en video, lo detenemos primero
             if (isRecording) {
                 val intent = Intent(this, CameraService::class.java).apply {
                     action = CameraService.CameraServiceActions.ACTION_STOP_RECORDING
@@ -134,9 +164,20 @@ class MainActivity : AppCompatActivity() {
                 isRecording = false
             }
 
+            if (isFlashOn) {
+                isFlashOn = false
+                if (isPhotoMode) {
+                    toggleFlashForPhoto(false)
+                }
+                updateFlashUI(false)
+            }
+            // Cambio de modo
             isPhotoMode = !isPhotoMode
             updateUIForMode()
+
+            btnFlash.isEnabled = true
         }
+
 
         // Estado inicial de la UI
         updateUIForMode()
@@ -147,11 +188,13 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         val filter = IntentFilter(CameraService.ACTION_SERVICE_STOPPED)
         registerReceiver(serviceStoppedReceiver, filter)
+        orientationListener.enable()
     }
 
     override fun onPause() {
         super.onPause()
         unregisterReceiver(serviceStoppedReceiver)
+        orientationListener.disable()
     }
 
     /** Inicia la preview para tomar fotos en la Activity. */
@@ -298,7 +341,44 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Permisos y resultados
+    private fun orientationToSurfaceRotation(orientation: Int): Int {
+        return when {
+            orientation in 45..134 -> Surface.ROTATION_90
+            orientation in 135..224 -> Surface.ROTATION_180
+            orientation in 225..314 -> Surface.ROTATION_270
+            else -> Surface.ROTATION_0
+        }
+    }
+
+    private fun updateFlashUI(isOn: Boolean) {
+        val iconRes = if (isOn) R.drawable.ic_flash_on else R.drawable.ic_flash_off
+        val iconBack = if (isOn) R.drawable.circle_yellow else R.drawable.circle_button_small
+        btnFlash.setBackgroundResource(iconBack)
+        btnFlash.setImageResource(iconRes)
+    }
+
+    private fun lockCurrentOrientation() {
+        // Detecta la orientación actual (portrait u horizontal)
+        val rotation = windowManager.defaultDisplay.rotation
+        val orientation = resources.configuration.orientation
+
+        // Si está en portrait
+        if (orientation == Configuration.ORIENTATION_PORTRAIT) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            // Horizontal
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+    }
+
+    private fun unlockOrientation() {
+        // Permite rotación libre otra vez
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+
+
+    /** Permisos y resultados **/
     override fun onRequestPermissionsResult(
         requestCode: Int, permissions: Array<out String>, grantResults: IntArray
     ) {
