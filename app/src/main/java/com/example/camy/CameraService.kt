@@ -40,6 +40,8 @@ class CameraService : Service(), LifecycleOwner {
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var cameraExecutor: ExecutorService
 
+    private var DATE_FORMAT = "dd.MM.yyyy"
+
     object CameraServiceActions {
         const val ACTION_START_RECORDING = "com.example.camy.action.START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.example.camy.action.STOP_RECORDING"
@@ -129,8 +131,9 @@ class CameraService : Service(), LifecycleOwner {
     }
 
     private fun startRecordingVideo() {
+        val date = getCurrentDate()
         val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "video_${System.currentTimeMillis()}.mp4")
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "video_${System.currentTimeMillis()}_${date}.mp4")
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos")
@@ -259,4 +262,5 @@ class CameraService : Service(), LifecycleOwner {
         private const val NOTIFICATION_ID = 123
         const val ACTION_SERVICE_STOPPED = "com.example.camy.ACTION_SERVICE_STOPPED"
     }
+
 }

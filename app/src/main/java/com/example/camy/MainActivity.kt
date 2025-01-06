@@ -31,7 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnToggleMode: ImageView
 
     // Estados
-    private var isPhotoMode = true
+    private var isPhotoMode = false
     private var isRecording = false
     private var isFlashOn = false
 
@@ -95,8 +95,9 @@ class MainActivity : AppCompatActivity() {
                 toggleFlashForPhoto(isFlashOn)
             } else {
                 if (!isRecording) {
-                    Toast.makeText(this,"Debes iniciar la grabación para usar la linterna",
-                        Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this, "Debes iniciar la grabación para usar la linterna", Toast.LENGTH_SHORT
+                    ).show()
                 } else {
                     // Linterna en modo video GRABANDO
                     isFlashOn = !isFlashOn
@@ -245,9 +246,9 @@ class MainActivity : AppCompatActivity() {
     private fun capturePhoto() {
         val imgCapture = imageCapture ?: return
         Log.d("MainActivity", "Capturando foto en la Activity...")
-
+        val date = getCurrentDate()
         val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "photo_${System.currentTimeMillis()}.jpg")
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "photo_${System.currentTimeMillis()}_${date}.jpg")
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Photos")
@@ -343,11 +344,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun orientationToSurfaceRotation(orientation: Int): Int {
         return when (orientation) {
-            in 315..359, in 0..44   -> Surface.ROTATION_0
-            in 45..134              -> Surface.ROTATION_90
-            in 135..224             -> Surface.ROTATION_180
-            in 225..314             -> Surface.ROTATION_270
-            else                    -> Surface.ROTATION_0
+            in 315..359, in 0..44 -> Surface.ROTATION_0
+            in 45..134 -> Surface.ROTATION_90
+            in 135..224 -> Surface.ROTATION_180
+            in 225..314 -> Surface.ROTATION_270
+            else -> Surface.ROTATION_0
         }
     }
 
@@ -377,7 +378,6 @@ class MainActivity : AppCompatActivity() {
         // Permite rotación libre otra vez
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
-
 
 
     /** Permisos y resultados **/

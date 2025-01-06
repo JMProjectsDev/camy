@@ -47,7 +47,7 @@
         android:background="@drawable/circle_button_large"
         android:foreground="@drawable/ripple_circle"
         android:contentDescription="@string/make_video_photo"
-        android:src="@drawable/ic_photo"
+        android:src="@drawable/ic_video"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
@@ -58,7 +58,7 @@
         android:layout_height="48dp"
         android:background="@drawable/circle_button_small"
         android:foreground="@drawable/ripple_circle"
-        android:src="@drawable/ic_video"
+        android:src="@drawable/ic_photo"
         android:contentDescription="@string/swap_video"
         android:layout_margin="18dp"
         app:layout_constraintBottom_toBottomOf="parent"
