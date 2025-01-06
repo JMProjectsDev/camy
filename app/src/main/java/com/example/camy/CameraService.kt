@@ -40,7 +40,7 @@ class CameraService : Service(), LifecycleOwner {
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var cameraExecutor: ExecutorService
 
-    private var DATE_FORMAT = "dd.MM.yyyy"
+    private var pendingRotation = Surface.ROTATION_0
 
     object CameraServiceActions {
         const val ACTION_START_RECORDING = "com.example.camy.action.START_RECORDING"
@@ -72,11 +72,21 @@ class CameraService : Service(), LifecycleOwner {
         when (intent?.action) {
             "com.example.camy.ACTION_ROTATION_CHANGED" -> {
                 val newRotation = intent.getIntExtra("VIDEO_ROTATION", Surface.ROTATION_0)
-                videoCapture?.targetRotation = newRotation
+                
+                val finalRotation = when (newRotation) {
+                    Surface.ROTATION_0 -> Surface.ROTATION_0
+                    Surface.ROTATION_90 -> Surface.ROTATION_270
+                    Surface.ROTATION_180 -> Surface.ROTATION_180
+                    Surface.ROTATION_270 -> Surface.ROTATION_90
+                    else -> Surface.ROTATION_0
+                }
+
+                pendingRotation = finalRotation
+                videoCapture?.targetRotation = finalRotation
             }
             CameraServiceActions.ACTION_START_RECORDING -> {
                 if (!isRecording) {
-                    startCameraAndRecording()
+                    startCameraAndRecording(pendingRotation)
                 }
             }
             CameraServiceActions.ACTION_STOP_RECORDING -> {
@@ -93,14 +103,13 @@ class CameraService : Service(), LifecycleOwner {
                 capturePhoto()
             }
             else -> {
-                // Si no hay acción, no hacemos nada o podríamos iniciar la cámara
             }
         }
 
         return START_STICKY
     }
 
-    private fun startCameraAndRecording() {
+    private fun startCameraAndRecording(rotation: Int) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
@@ -120,6 +129,7 @@ class CameraService : Service(), LifecycleOwner {
                 val camera = cameraProvider.bindToLifecycle(
                     serviceLifecycleOwner, cameraSelector, videoCapture, imageCapture
                 )
+                videoCapture?.targetRotation = rotation
                 cameraControl = camera.cameraControl
 
                 // Arrancamos la grabación
@@ -144,9 +154,6 @@ class CameraService : Service(), LifecycleOwner {
             .setContentValues(contentValues).build()
 
         try {
-            // 1) Fijar rotación
-            videoCapture?.targetRotation = Surface.ROTATION_0
-
             activeRecording =
                 videoCapture?.output?.prepareRecording(this, outputOptions)?.withAudioEnabled()
                     ?.start(ContextCompat.getMainExecutor(this)) { event ->
@@ -253,6 +260,13 @@ class CameraService : Service(), LifecycleOwner {
         wakeLock = null
         cameraExecutor.shutdown()
     }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        stopRecordingVideo()
+        stopSelf()
+    }
+
 
     override fun onBind(intent: Intent?): IBinder? = null
     override fun getLifecycle() = serviceLifecycleOwner.lifecycle

@@ -198,6 +198,15 @@ class MainActivity : AppCompatActivity() {
         orientationListener.disable()
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        if (!isChangingConfigurations) {
+            stopService(Intent(this, CameraService::class.java))
+        }
+    }
+
+
+
     /** Inicia la preview para tomar fotos en la Activity. */
     private fun startPreviewInActivity() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -343,15 +352,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun orientationToSurfaceRotation(orientation: Int): Int {
+        Log.d("MainActivity", "Sensor orientation = $orientation")
         return when (orientation) {
             in 315..359, in 0..44 -> Surface.ROTATION_0
             in 45..134 -> Surface.ROTATION_90
-            in 135..224 -> Surface.ROTATION_180
-            in 225..314 -> Surface.ROTATION_270
+            in 135..314 -> Surface.ROTATION_270
             else -> Surface.ROTATION_0
         }
     }
-
 
     private fun updateFlashUI(isOn: Boolean) {
         val iconRes = if (isOn) R.drawable.ic_flash_on else R.drawable.ic_flash_off
@@ -362,14 +370,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun lockCurrentOrientation() {
         // Detecta la orientación actual (portrait u horizontal)
-        val rotation = windowManager.defaultDisplay.rotation
         val orientation = resources.configuration.orientation
 
-        // Si está en portrait
+        // Si está en portrait (vertical)
         if (orientation == Configuration.ORIENTATION_PORTRAIT) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
-            // Horizontal
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
     }
