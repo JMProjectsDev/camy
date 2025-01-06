@@ -16,7 +16,6 @@ import android.view.Surface
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
 import androidx.core.app.NotificationCompat
@@ -40,13 +39,17 @@ class CameraService : Service(), LifecycleOwner {
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var cameraExecutor: ExecutorService
 
+    // Esto es para dividir el video en trozos de aprox 4GB
+    private var chunkIndex = 0
+    private var pendingSplit = false
+    private val MAX_SIZE_4GB = 4L * 1024L * 1024L * 1024L
+
     private var pendingRotation = Surface.ROTATION_0
 
     object CameraServiceActions {
         const val ACTION_START_RECORDING = "com.example.camy.action.START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.example.camy.action.STOP_RECORDING"
         const val ACTION_TOGGLE_FLASH = "com.example.camy.action.TOGGLE_FLASH"
-        const val ACTION_CAPTURE_PHOTO = "com.example.camy.action.CAPTURE_PHOTO"
     }
 
     override fun onCreate() {
@@ -63,7 +66,6 @@ class CameraService : Service(), LifecycleOwner {
 
         // Executor
         cameraExecutor = Executors.newSingleThreadExecutor()
-
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -72,19 +74,22 @@ class CameraService : Service(), LifecycleOwner {
         when (intent?.action) {
             "com.example.camy.ACTION_ROTATION_CHANGED" -> {
 
-                val finalRotation = when (intent.getIntExtra("VIDEO_ROTATION", Surface.ROTATION_0)) {
-                    Surface.ROTATION_0 -> Surface.ROTATION_0
-                    Surface.ROTATION_90 -> Surface.ROTATION_270
-                    Surface.ROTATION_180 -> Surface.ROTATION_180
-                    Surface.ROTATION_270 -> Surface.ROTATION_90
-                    else -> Surface.ROTATION_0
-                }
+                val finalRotation =
+                    when (intent.getIntExtra("VIDEO_ROTATION", Surface.ROTATION_0)) {
+                        Surface.ROTATION_0 -> Surface.ROTATION_0
+                        Surface.ROTATION_90 -> Surface.ROTATION_270
+                        Surface.ROTATION_180 -> Surface.ROTATION_180
+                        Surface.ROTATION_270 -> Surface.ROTATION_90
+                        else -> Surface.ROTATION_0
+                    }
 
                 pendingRotation = finalRotation
                 videoCapture?.targetRotation = finalRotation
             }
             CameraServiceActions.ACTION_START_RECORDING -> {
                 if (!isRecording) {
+                    chunkIndex = 0
+                    pendingSplit = false
                     startCameraAndRecording(pendingRotation)
                 }
             }
@@ -92,17 +97,12 @@ class CameraService : Service(), LifecycleOwner {
                 if (isRecording) {
                     stopRecordingVideo()
                 }
-                // Podríamos parar el servicio
                 stopSelf()
             }
             CameraServiceActions.ACTION_TOGGLE_FLASH -> {
                 toggleFlash()
             }
-            CameraServiceActions.ACTION_CAPTURE_PHOTO -> {
-                capturePhoto()
-            }
-            else -> {
-            }
+            else -> {}
         }
 
         return START_STICKY
@@ -119,7 +119,6 @@ class CameraService : Service(), LifecycleOwner {
                 Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD)).build()
             videoCapture = VideoCapture.withOutput(recorder)
 
-            // Preparamos un ImageCapture (opcional)
             imageCapture = ImageCapture.Builder().build()
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
@@ -131,7 +130,6 @@ class CameraService : Service(), LifecycleOwner {
                 videoCapture?.targetRotation = rotation
                 cameraControl = camera.cameraControl
 
-                // Arrancamos la grabación
                 startRecordingVideo()
             } catch (e: Exception) {
                 Log.e(TAG, "Error al abrir la cámara: ${e.message}", e)
@@ -145,16 +143,15 @@ class CameraService : Service(), LifecycleOwner {
         val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
 
         val date = getCurrentDate()
+        val fileName = "video_chunk_${chunkIndex++}_${System.currentTimeMillis()}_${date}.mp4"
+
         val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "video_${System.currentTimeMillis()}_${date}.mp4")
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 if (storageChoice == "external") {
-                    // Si deseas usar "Movies/Camy-Videos" en “tarjeta SD” o algo
-                    // (si el dispositivo lo soporta). Sino, igual a "Movies/Camy-Videos"
                     put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos-Ext")
                 } else {
-                    // Almacenamiento interno o default
                     put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos")
                 }
             }
@@ -173,11 +170,27 @@ class CameraService : Service(), LifecycleOwner {
                 when (event) {
                     is VideoRecordEvent.Start -> {
                         isRecording = true
-                        Log.d(TAG, "Grabación iniciada (Service). recordAudio=$recordAudio, storage=$storageChoice")
+                        Log.d(
+                            TAG,
+                            "Grabación iniciada: $fileName (Service). audio=$recordAudio, storage=$storageChoice"
+                        )
                     }
+                    // Se comprueba con Status la cantidad de Bytes grabados
+                    is VideoRecordEvent.Status -> {
+                        val bytesSoFar = event.recordingStats.numBytesRecorded
+                        checkFileSize(bytesSoFar)
+                    }
+
                     is VideoRecordEvent.Finalize -> {
-                        isRecording = false
+                        if (isRecording) {
+                            isRecording = false // Grabacion finalizada
+                        }
                         Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
+                        // Si pendingSplit = true => iniciar el siguiente chunk
+                        if (pendingSplit) {
+                            pendingSplit = false
+                            startRecordingVideo()
+                        }
                     }
                     else -> {}
                 }
@@ -190,39 +203,20 @@ class CameraService : Service(), LifecycleOwner {
 
     private fun stopRecordingVideo() {
         if (isRecording) {
+            pendingSplit = false
             activeRecording?.stop()
             activeRecording = null
             isRecording = false
         }
     }
 
-    private fun capturePhoto() {
-        if (imageCapture == null) return
-        Log.d(TAG, "Capturando foto...")
-
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "photo_${System.currentTimeMillis()}.jpg")
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camy-Photos")
-            }
+    private fun checkFileSize(bytesSoFar: Long) {
+        if (bytesSoFar >= MAX_SIZE_4GB && !pendingSplit) {
+            Log.d(TAG, "Se alcanzó 4GB => forzar split")
+            pendingSplit = true
+            activeRecording?.stop()
+            activeRecording = null
         }
-        val outputUri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val outputOptions =
-            ImageCapture.OutputFileOptions.Builder(contentResolver, outputUri, contentValues)
-                .build()
-
-        imageCapture?.takePicture(outputOptions,
-            ContextCompat.getMainExecutor(this),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    Log.d(TAG, "Foto guardada en: $outputUri")
-                }
-
-                override fun onError(exception: ImageCaptureException) {
-                    Log.e(TAG, "Error al guardar foto: ${exception.message}", exception)
-                }
-            })
     }
 
     private fun createNotification(): Notification {
@@ -232,7 +226,6 @@ class CameraService : Service(), LifecycleOwner {
             "Camera Service Channel",
             NotificationManager.IMPORTANCE_LOW // o IMPORTANCE_DEFAULT
         ).apply {
-            // Control de visibilidad si quieres forzar lo público en lock screen
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -240,7 +233,7 @@ class CameraService : Service(), LifecycleOwner {
 
         val builder =
             NotificationCompat.Builder(this, channelId).setOngoing(true) // Notificación persistente
-                .setPriority(NotificationCompat.PRIORITY_LOW) // Equivale a IMPORTANCE_LOW en Oreo-
+                .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
 
         return builder.build()
@@ -277,7 +270,6 @@ class CameraService : Service(), LifecycleOwner {
         stopSelf()
     }
 
-
     override fun onBind(intent: Intent?): IBinder? = null
     override fun getLifecycle() = serviceLifecycleOwner.lifecycle
 
@@ -286,5 +278,4 @@ class CameraService : Service(), LifecycleOwner {
         private const val NOTIFICATION_ID = 123
         const val ACTION_SERVICE_STOPPED = "com.example.camy.ACTION_SERVICE_STOPPED"
     }
-
 }

@@ -206,7 +206,6 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
             btnFlash.isEnabled = true
         }
 
-
         // Estado inicial de la UI
         updateUIForMode()
     }
@@ -409,7 +408,6 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
     }
 
     private fun unlockOrientation() {
-        // Permite rotación libre otra vez
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
