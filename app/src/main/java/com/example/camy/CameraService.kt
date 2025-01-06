@@ -72,7 +72,7 @@ class CameraService : Service(), LifecycleOwner {
         when (intent?.action) {
             "com.example.camy.ACTION_ROTATION_CHANGED" -> {
                 val newRotation = intent.getIntExtra("VIDEO_ROTATION", Surface.ROTATION_0)
-                
+
                 val finalRotation = when (newRotation) {
                     Surface.ROTATION_0 -> Surface.ROTATION_0
                     Surface.ROTATION_90 -> Surface.ROTATION_270

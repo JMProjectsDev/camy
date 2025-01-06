@@ -7,13 +7,14 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.view.OrientationEventListener
 import android.view.Surface
-import android.widget.ImageButton
-import android.widget.ImageView
-import android.widget.Toast
+import android.view.View
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -41,6 +42,14 @@ class MainActivity : AppCompatActivity() {
     private var imageCapture: ImageCapture? = null
     private var cameraControl: CameraControl? = null
 
+    private lateinit var llTimerContainer: LinearLayout
+    private lateinit var tvTimer: TextView
+
+    // Para el cronómetro
+    private var timerSeconds = 0
+    private var timerHandler = Handler(Looper.getMainLooper())
+    private var isTimerRunning = false
+
     private lateinit var orientationListener: OrientationEventListener
 
     // Permisos
@@ -53,6 +62,17 @@ class MainActivity : AppCompatActivity() {
             permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
         return permissions.toTypedArray()
+    }
+
+    // Runnable que se ejecuta cada segundo
+    private val timerRunnable = object : Runnable {
+        override fun run() {
+            if (isTimerRunning) {
+                timerSeconds++
+                updateTimerUI(timerSeconds)
+                timerHandler.postDelayed(this, 1000L) // Delay de 1 segundo y lanzar
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,6 +100,8 @@ class MainActivity : AppCompatActivity() {
         btnGallery = findViewById(R.id.btnGallery)
         btnCapture = findViewById(R.id.btnCapture)
         btnToggleMode = findViewById(R.id.btnToggleMode)
+        tvTimer = findViewById(R.id.tvTimer)
+        llTimerContainer = findViewById(R.id.llTimerContainer)
 
         val requiredPermissions = getRequiredPermissions()
         if (!allPermissionsGranted(requiredPermissions)) {
@@ -120,10 +142,10 @@ class MainActivity : AppCompatActivity() {
                 capturePhoto()
             } else {
                 if (!isRecording) {
-                    // Bloquea la orientación actual
-                    lockCurrentOrientation()
-
+                    lockCurrentOrientation() // Bloquea la orientación actual
                     stopPreviewInActivity()
+                    startTimer()
+
                     val intent = Intent(this, CameraService::class.java).apply {
                         action = CameraService.CameraServiceActions.ACTION_START_RECORDING
                     }
@@ -135,11 +157,11 @@ class MainActivity : AppCompatActivity() {
                     animateIconSize(btnCapture, 22)
                     btnCapture.setBackgroundResource(R.drawable.circle_red)
                 } else {
-                    // STOP RECORDING
                     val intent = Intent(this, CameraService::class.java).apply {
                         action = CameraService.CameraServiceActions.ACTION_STOP_RECORDING
                     }
                     startService(intent)
+                    stopTimer()
 
                     // Forzar linterna apagada
                     isFlashOn = false
@@ -352,7 +374,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun orientationToSurfaceRotation(orientation: Int): Int {
-        Log.d("MainActivity", "Sensor orientation = $orientation")
         return when (orientation) {
             in 315..359, in 0..44 -> Surface.ROTATION_0
             in 45..134 -> Surface.ROTATION_90
@@ -383,6 +404,26 @@ class MainActivity : AppCompatActivity() {
     private fun unlockOrientation() {
         // Permite rotación libre otra vez
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+    private fun startTimer() {
+        timerSeconds = 0
+        isTimerRunning = true
+        llTimerContainer.visibility = View.VISIBLE
+        timerHandler.post(timerRunnable)
+    }
+
+    private fun stopTimer() {
+        isTimerRunning = false
+        timerHandler.removeCallbacks(timerRunnable)
+        llTimerContainer.visibility = View.GONE
+    }
+
+    private fun updateTimerUI(seconds: Int) {
+        val minutes = seconds / 60
+        val secs = seconds % 60
+        val timeStr = String.format("%02d:%02d", minutes, secs)
+        tvTimer.text = timeStr
     }
 
 
