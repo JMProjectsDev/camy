@@ -19,17 +19,17 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSavedListener {
 
     private lateinit var previewView: PreviewView
     private lateinit var btnFlash: ImageButton
     private lateinit var btnGallery: ImageButton
     private lateinit var btnCapture: ImageView
     private lateinit var btnToggleMode: ImageView
+    private lateinit var btnSettings: ImageButton
 
     // Estados
     private var isPhotoMode = false
@@ -102,6 +102,7 @@ class MainActivity : AppCompatActivity() {
         btnToggleMode = findViewById(R.id.btnToggleMode)
         tvTimer = findViewById(R.id.tvTimer)
         llTimerContainer = findViewById(R.id.llTimerContainer)
+        btnSettings = findViewById(R.id.btnSettings)
 
         val requiredPermissions = getRequiredPermissions()
         if (!allPermissionsGranted(requiredPermissions)) {
@@ -131,6 +132,10 @@ class MainActivity : AppCompatActivity() {
                     startService(intent)
                 }
             }
+        }
+
+        btnSettings.setOnClickListener {
+            showSettingsDialog()
         }
 
         btnGallery.setOnClickListener {
@@ -228,7 +233,6 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-
     /** Inicia la preview para tomar fotos en la Activity. */
     private fun startPreviewInActivity() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -279,7 +283,10 @@ class MainActivity : AppCompatActivity() {
         Log.d("MainActivity", "Capturando foto en la Activity...")
         val date = getCurrentDate()
         val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "photo_${System.currentTimeMillis()}_${date}.jpg")
+            put(
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                "photo_${System.currentTimeMillis()}_${date}.jpg"
+            )
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Photos")
@@ -448,5 +455,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun allPermissionsGranted(perms: Array<String>) = perms.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun showSettingsDialog() {
+        val dialog = SettingsDialogFragment()
+        dialog.listener = this  // para recibir onSettingsSaved
+        dialog.show(supportFragmentManager, "settingsDialog")
+    }
+
+    override fun onSettingsSaved(recordAudio: Boolean, storageOption: String) {
+        if (!recordAudio && storageOption == "internal") {
+            Toast.makeText(
+                this, "Micrófono desactivado. \n Alm. interno seleccionado.", Toast.LENGTH_SHORT
+            ).show()
+        } else if (!recordAudio && storageOption == "external") {
+            Toast.makeText(
+                this, "Micrófono desactivado. \n Alm. externo seleccionado.", Toast.LENGTH_SHORT
+            ).show()
+        } else if (recordAudio && storageOption == "internal") {
+            Toast.makeText(this, "Micrófono activado. \n Alm. interno seleccionado.", Toast.LENGTH_SHORT)
+                .show()
+        } else {
+            Toast.makeText(this, "Micrófono activado. \n Alm. externo seleccionado.", Toast.LENGTH_SHORT)
+                .show()
+        }
     }
 }

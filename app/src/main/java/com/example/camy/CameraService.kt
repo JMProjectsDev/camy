@@ -71,9 +71,8 @@ class CameraService : Service(), LifecycleOwner {
 
         when (intent?.action) {
             "com.example.camy.ACTION_ROTATION_CHANGED" -> {
-                val newRotation = intent.getIntExtra("VIDEO_ROTATION", Surface.ROTATION_0)
 
-                val finalRotation = when (newRotation) {
+                val finalRotation = when (intent.getIntExtra("VIDEO_ROTATION", Surface.ROTATION_0)) {
                     Surface.ROTATION_0 -> Surface.ROTATION_0
                     Surface.ROTATION_90 -> Surface.ROTATION_270
                     Surface.ROTATION_180 -> Surface.ROTATION_180
@@ -141,12 +140,23 @@ class CameraService : Service(), LifecycleOwner {
     }
 
     private fun startRecordingVideo() {
+        val prefs = getSharedPreferences("MyAppPrefs", Context.MODE_PRIVATE)
+        val recordAudio = prefs.getBoolean("recordAudio", true)
+        val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
+
         val date = getCurrentDate()
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, "video_${System.currentTimeMillis()}_${date}.mp4")
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos")
+                if (storageChoice == "external") {
+                    // Si deseas usar "Movies/Camy-Videos" en “tarjeta SD” o algo
+                    // (si el dispositivo lo soporta). Sino, igual a "Movies/Camy-Videos"
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos-Ext")
+                } else {
+                    // Almacenamiento interno o default
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos")
+                }
             }
         }
         val videoUri = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -154,21 +164,24 @@ class CameraService : Service(), LifecycleOwner {
             .setContentValues(contentValues).build()
 
         try {
-            activeRecording =
-                videoCapture?.output?.prepareRecording(this, outputOptions)?.withAudioEnabled()
-                    ?.start(ContextCompat.getMainExecutor(this)) { event ->
-                        when (event) {
-                            is VideoRecordEvent.Start -> {
-                                isRecording = true
-                                Log.d(TAG, "Grabación iniciada (Service)")
-                            }
-                            is VideoRecordEvent.Finalize -> {
-                                isRecording = false
-                                Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
-                            }
-                            else -> {}
-                        }
+            var recording = videoCapture?.output?.prepareRecording(this, outputOptions)
+
+            if (recordAudio) {
+                recording = recording?.withAudioEnabled()
+            }
+            activeRecording = recording?.start(ContextCompat.getMainExecutor(this)) { event ->
+                when (event) {
+                    is VideoRecordEvent.Start -> {
+                        isRecording = true
+                        Log.d(TAG, "Grabación iniciada (Service). recordAudio=$recordAudio, storage=$storageChoice")
                     }
+                    is VideoRecordEvent.Finalize -> {
+                        isRecording = false
+                        Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
+                    }
+                    else -> {}
+                }
+            }
 
         } catch (se: SecurityException) {
             Log.e(TAG, "SecurityException al grabar: ${se.message}", se)
@@ -214,19 +227,16 @@ class CameraService : Service(), LifecycleOwner {
 
     private fun createNotification(): Notification {
         val channelId = "camera_service_channel"
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Camera Service Channel",
-                NotificationManager.IMPORTANCE_LOW // o IMPORTANCE_DEFAULT
-            ).apply {
-                // Control de visibilidad si quieres forzar lo público en lock screen
-                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
-            }
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            channelId,
+            "Camera Service Channel",
+            NotificationManager.IMPORTANCE_LOW // o IMPORTANCE_DEFAULT
+        ).apply {
+            // Control de visibilidad si quieres forzar lo público en lock screen
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(channel)
 
         val builder =
             NotificationCompat.Builder(this, channelId).setOngoing(true) // Notificación persistente
