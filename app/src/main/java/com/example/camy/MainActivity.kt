@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Size
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
@@ -254,7 +255,9 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
 
             // Se crea el Preview y el ImageCapture
             val preview = Preview.Builder().build()
-            val imgCapture = ImageCapture.Builder().build()
+            val imgCapture = ImageCapture.Builder()
+                .setJpegQuality(50)
+                .build()
             previewUseCase = preview
             imageCapture = imgCapture
 
@@ -301,7 +304,7 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
             )
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameraX-Photos")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camy-Pictures")
             }
         }
         val outputUri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -438,12 +441,17 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
     }
 
     private fun updateTimerUI(seconds: Int) {
-        val minutes = seconds / 60
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
         val secs = seconds % 60
-        val timeStr = String.format("%02d:%02d", minutes, secs)
+
+        val timeStr = if (hours > 0) {
+            String.format("%02d:%02d:%02d", hours, minutes, secs) // Formato con horas
+        } else {
+            String.format("%02d:%02d", minutes, secs) // Formato sin horas
+        }
         tvTimer.text = timeStr
     }
-
 
     /** Permisos y resultados **/
     override fun onRequestPermissionsResult(
