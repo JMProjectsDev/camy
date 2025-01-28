@@ -17,12 +17,13 @@
         android:textColor="#ffffff"
         android:text="@string/record_audio" />
 
-    <!-- Un Spinner para “almacenamiento” -->
+    <!-- Un Spinner para los path de almacenamiento -->
     <Spinner
         android:id="@+id/spinnerStorage"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
+
         android:minHeight="48dp" />
 
     <Button

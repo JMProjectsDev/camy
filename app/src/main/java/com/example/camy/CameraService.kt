@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.ContentValues
-import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
@@ -17,16 +16,27 @@ import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.*
+import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class CameraService : Service(), LifecycleOwner {
 
-    private val serviceLifecycleOwner = ServiceLifecycleOwner()
+    private val lifecycleRegistry: LifecycleRegistry by lazy { LifecycleRegistry(this) }
+
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
 
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
@@ -54,22 +64,22 @@ class CameraService : Service(), LifecycleOwner {
 
     override fun onCreate() {
         super.onCreate()
-        serviceLifecycleOwner.handleOnCreate()
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
 
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
 
         // WakeLock
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp:CameraWakelock")
         wakeLock?.acquire()
 
         // Executor
         cameraExecutor = Executors.newSingleThreadExecutor()
-    }
+   }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        serviceLifecycleOwner.handleOnStart()
+        lifecycleRegistry.currentState = Lifecycle.State.STARTED
 
         when (intent?.action) {
             "com.example.camy.ACTION_ROTATION_CHANGED" -> {
@@ -125,7 +135,7 @@ class CameraService : Service(), LifecycleOwner {
 
             try {
                 val camera = cameraProvider.bindToLifecycle(
-                    serviceLifecycleOwner, cameraSelector, videoCapture, imageCapture
+                    this, cameraSelector, videoCapture, imageCapture
                 )
                 videoCapture?.targetRotation = rotation
                 cameraControl = camera.cameraControl
@@ -138,7 +148,7 @@ class CameraService : Service(), LifecycleOwner {
     }
 
     private fun startRecordingVideo() {
-        val prefs = getSharedPreferences("MyAppPrefs", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
         val recordAudio = prefs.getBoolean("recordAudio", true)
         val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
 
@@ -228,7 +238,7 @@ class CameraService : Service(), LifecycleOwner {
         ).apply {
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(channel)
 
         val builder =
@@ -250,8 +260,8 @@ class CameraService : Service(), LifecycleOwner {
     }
 
     override fun onDestroy() {
+        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
-        serviceLifecycleOwner.handleOnDestroy()
 
         stopRecordingVideo()
 
@@ -271,7 +281,6 @@ class CameraService : Service(), LifecycleOwner {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun getLifecycle() = serviceLifecycleOwner.lifecycle
 
     companion object {
         private const val TAG = "CameraService"

@@ -20,7 +20,6 @@ class SettingsDialogFragment : DialogFragment() {
     private lateinit var spinnerStorage: Spinner
     private lateinit var btnSave: Button
 
-    // Interfaz para comunicar cambios a la Activity, si deseas
     interface OnSettingsSavedListener {
         fun onSettingsSaved(recordAudio: Boolean, storageOption: String)
     }
@@ -51,7 +50,7 @@ class SettingsDialogFragment : DialogFragment() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         spinnerStorage.adapter = adapter
 
-        // Si quisieras cargar valores guardados, por ejemplo con SharedPreferences:
+        // Cargar valores guardados con SharedPreferences:
         val prefs = requireContext().getSharedPreferences("MyAppPrefs", Context.MODE_PRIVATE)
         val recordAudio = prefs.getBoolean("recordAudio", true)
         val storageChoice = prefs.getString("storageChoice", "internal")

@@ -9,7 +9,8 @@
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        />
 
     <!-- Botón de linterna (Flash) -->
     <ImageButton
@@ -55,6 +56,7 @@
             android:layout_height="8dp"
             android:layout_marginTop="6dp"
             android:layout_marginEnd="6dp"
+            android:contentDescription="@string/app_name"
             android:src="@drawable/red_dot" />
 
         <!-- El texto del cronómetro -->

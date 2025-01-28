@@ -1,7 +1,11 @@
 package com.example.camy
 
 import android.Manifest
-import android.content.*
+import android.content.BroadcastReceiver
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -14,9 +18,17 @@ import android.util.Log
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
-import android.widget.*
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.*
+import androidx.camera.core.CameraControl
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
@@ -214,7 +226,8 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
     override fun onResume() {
         super.onResume()
         val filter = IntentFilter(CameraService.ACTION_SERVICE_STOPPED)
-        registerReceiver(serviceStoppedReceiver, filter)
+        registerReceiver(serviceStoppedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        // No poner anotaciones ya que restringira la funcion a la version de la API.
         orientationListener.enable()
     }
 
@@ -400,10 +413,10 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         val orientation = resources.configuration.orientation
 
         // Si está en portrait (vertical)
-        if (orientation == Configuration.ORIENTATION_PORTRAIT) {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        requestedOrientation = if (orientation == Configuration.ORIENTATION_PORTRAIT) {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
     }
 
