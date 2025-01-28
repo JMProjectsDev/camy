@@ -20,10 +20,11 @@
     <!-- Un Spinner para los path de almacenamiento -->
     <Spinner
         android:id="@+id/spinnerStorage"
+        style="@style/Widget.AppCompat.Spinner"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-
+        android:backgroundTint="#F6F6F6"
         android:minHeight="48dp" />
 
     <Button

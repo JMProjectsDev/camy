@@ -46,8 +46,8 @@ class SettingsDialogFragment : DialogFragment() {
         // Configurar Spinner (almacenamiento)
         val storageOptions = listOf("Almacenamiento Interno", "Almacenamiento Externo")
         val adapter =
-            ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, storageOptions)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            ArrayAdapter(requireContext(), R.layout.spinner_item, storageOptions)
+        adapter.setDropDownViewResource(R.layout.spinner_dropdown_item)
         spinnerStorage.adapter = adapter
 
         // Cargar valores guardados con SharedPreferences:
