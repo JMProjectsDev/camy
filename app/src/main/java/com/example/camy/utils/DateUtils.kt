@@ -1,4 +1,4 @@
-package com.example.camy
+package com.example.camy.utils
 
 import java.text.SimpleDateFormat
 import java.util.*

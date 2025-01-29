@@ -4,9 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.ContentValues
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.provider.MediaStore
@@ -28,6 +26,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import com.example.camy.utils.createMediaContentValues
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -76,7 +75,7 @@ class CameraService : Service(), LifecycleOwner {
 
         // Executor
         cameraExecutor = Executors.newSingleThreadExecutor()
-   }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
@@ -96,6 +95,7 @@ class CameraService : Service(), LifecycleOwner {
                 pendingRotation = finalRotation
                 videoCapture?.targetRotation = finalRotation
             }
+
             CameraServiceActions.ACTION_START_RECORDING -> {
                 if (!isRecording) {
                     chunkIndex = 0
@@ -103,15 +103,18 @@ class CameraService : Service(), LifecycleOwner {
                     startCameraAndRecording(pendingRotation)
                 }
             }
+
             CameraServiceActions.ACTION_STOP_RECORDING -> {
                 if (isRecording) {
                     stopRecordingVideo()
                 }
                 stopSelf()
             }
+
             CameraServiceActions.ACTION_TOGGLE_FLASH -> {
                 toggleFlash()
             }
+
             else -> {}
         }
 
@@ -152,20 +155,8 @@ class CameraService : Service(), LifecycleOwner {
         val recordAudio = prefs.getBoolean("recordAudio", true)
         val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
 
-        val date = getCurrentDate()
-        val fileName = "video_chunk_${chunkIndex++}_${System.currentTimeMillis()}_${date}.mp4"
-
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                if (storageChoice == "external") {
-                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos-Ext")
-                } else {
-                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Camy-Videos")
-                }
-            }
-        }
+        // Crear ContentValues dinamicos
+        val contentValues = createMediaContentValues("video", storageChoice)
         val videoUri = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val outputOptions = MediaStoreOutputOptions.Builder(contentResolver, videoUri)
             .setContentValues(contentValues).build()
@@ -181,11 +172,10 @@ class CameraService : Service(), LifecycleOwner {
                     is VideoRecordEvent.Start -> {
                         isRecording = true
                         Log.d(
-                            TAG,
-                            "Grabación iniciada: $fileName (Service). audio=$recordAudio, storage=$storageChoice"
+                            TAG, "Grabación iniciada. audio=$recordAudio, storage=$storageChoice"
                         )
                     }
-                    // Se comprueba con Status la cantidad de Bytes grabados
+
                     is VideoRecordEvent.Status -> {
                         val bytesSoFar = event.recordingStats.numBytesRecorded
                         checkFileSize(bytesSoFar)
@@ -193,23 +183,23 @@ class CameraService : Service(), LifecycleOwner {
 
                     is VideoRecordEvent.Finalize -> {
                         if (isRecording) {
-                            isRecording = false // Grabacion finalizada
+                            isRecording = false
                         }
                         Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
-                        // Si pendingSplit = true => iniciar el siguiente chunk
                         if (pendingSplit) {
                             pendingSplit = false
                             startRecordingVideo()
                         }
                     }
+
                     else -> {}
                 }
             }
-
         } catch (se: SecurityException) {
             Log.e(TAG, "SecurityException al grabar: ${se.message}", se)
         }
     }
+
 
     private fun stopRecordingVideo() {
         if (isRecording) {
@@ -242,7 +232,7 @@ class CameraService : Service(), LifecycleOwner {
         manager.createNotificationChannel(channel)
 
         val builder =
-            NotificationCompat.Builder(this, channelId).setOngoing(true) // Notificación persistente
+            NotificationCompat.Builder(this, channelId).setOngoing(true) // Notificacion persistente
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
 
@@ -265,7 +255,7 @@ class CameraService : Service(), LifecycleOwner {
 
         stopRecordingVideo()
 
-        // Emitir broadcast de “Service detenido”
+        // Emitir broadcast de servicio detenido
         val bcIntent = Intent(ACTION_SERVICE_STOPPED)
         sendBroadcast(bcIntent)
 

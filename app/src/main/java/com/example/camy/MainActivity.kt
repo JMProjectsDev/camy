@@ -15,7 +15,6 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
-import android.util.Size
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
@@ -34,6 +33,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.example.camy.utils.createMediaContentValues
+import com.example.camy.utils.getCurrentDate
 
 class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSavedListener {
 
@@ -255,9 +256,7 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
 
             // Se crea el Preview y el ImageCapture
             val preview = Preview.Builder().build()
-            val imgCapture = ImageCapture.Builder()
-                .setJpegQuality(50)
-                .build()
+            val imgCapture = ImageCapture.Builder().setJpegQuality(50).build()
             previewUseCase = preview
             imageCapture = imgCapture
 
@@ -296,17 +295,13 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
     private fun capturePhoto() {
         val imgCapture = imageCapture ?: return
         Log.d("MainActivity", "Capturando foto en la Activity...")
-        val date = getCurrentDate()
-        val contentValues = ContentValues().apply {
-            put(
-                MediaStore.MediaColumns.DISPLAY_NAME,
-                "photo_${System.currentTimeMillis()}_${date}.jpg"
-            )
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camy-Pictures")
-            }
-        }
+
+        // Obtener almacenamiento seleccionado
+        val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
+        val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
+
+        // Crear ContentValues dinamicos
+        val contentValues = createMediaContentValues("image", storageChoice)
         val outputUri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val outputOptions =
             ImageCapture.OutputFileOptions.Builder(contentResolver, outputUri, contentValues)
@@ -492,11 +487,13 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
                 this, "Micrófono desactivado. \n Alm. externo seleccionado.", Toast.LENGTH_SHORT
             ).show()
         } else if (recordAudio && storageOption == "internal") {
-            Toast.makeText(this, "Micrófono activado. \n Alm. interno seleccionado.", Toast.LENGTH_SHORT)
-                .show()
+            Toast.makeText(
+                this, "Micrófono activado. \n Alm. interno seleccionado.", Toast.LENGTH_SHORT
+            ).show()
         } else {
-            Toast.makeText(this, "Micrófono activado. \n Alm. externo seleccionado.", Toast.LENGTH_SHORT)
-                .show()
+            Toast.makeText(
+                this, "Micrófono activado. \n Alm. externo seleccionado.", Toast.LENGTH_SHORT
+            ).show()
         }
     }
 }

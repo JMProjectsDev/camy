@@ -20,15 +20,14 @@ class SettingsDialogFragment : DialogFragment() {
     private lateinit var spinnerStorage: Spinner
     private lateinit var btnSave: Button
 
+    var listener: OnSettingsSavedListener? = null
+
     interface OnSettingsSavedListener {
         fun onSettingsSaved(recordAudio: Boolean, storageOption: String)
     }
 
-    var listener: OnSettingsSavedListener? = null
-
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val dialog = super.onCreateDialog(savedInstanceState)
-        // Haz el background del diálogo (ventana) transparente
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         return dialog
     }
@@ -36,7 +35,6 @@ class SettingsDialogFragment : DialogFragment() {
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View? {
-        // Infla tu layout
         val view = inflater.inflate(R.layout.dialog_settings, container, false)
 
         chkRecordAudio = view.findViewById(R.id.chkRecordAudio)
@@ -50,7 +48,7 @@ class SettingsDialogFragment : DialogFragment() {
         adapter.setDropDownViewResource(R.layout.spinner_dropdown_item)
         spinnerStorage.adapter = adapter
 
-        // Cargar valores guardados con SharedPreferences:
+        // Cargar valores guardados con SharedPreferences
         val prefs = requireContext().getSharedPreferences("MyAppPrefs", Context.MODE_PRIVATE)
         val recordAudio = prefs.getBoolean("recordAudio", true)
         val storageChoice = prefs.getString("storageChoice", "internal")
@@ -77,7 +75,6 @@ class SettingsDialogFragment : DialogFragment() {
 
             dismiss()
         }
-
         return view
     }
 
