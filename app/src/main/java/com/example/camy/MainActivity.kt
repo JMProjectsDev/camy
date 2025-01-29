@@ -2,7 +2,6 @@ package com.example.camy
 
 import android.Manifest
 import android.content.BroadcastReceiver
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -34,7 +33,6 @@ import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.camy.utils.createMediaContentValues
-import com.example.camy.utils.getCurrentDate
 
 class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSavedListener {
 
