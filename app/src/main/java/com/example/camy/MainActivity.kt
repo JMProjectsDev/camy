@@ -300,7 +300,12 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
 
         // Crear ContentValues dinamicos
         val contentValues = createMediaContentValues("image", storageChoice)
-        val outputUri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val outputUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+
         val outputOptions =
             ImageCapture.OutputFileOptions.Builder(contentResolver, outputUri, contentValues)
                 .build()

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.provider.MediaStore
@@ -157,7 +158,12 @@ class CameraService : Service(), LifecycleOwner {
 
         // Crear ContentValues dinamicos
         val contentValues = createMediaContentValues("video", storageChoice)
-        val videoUri = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val videoUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+
         val outputOptions = MediaStoreOutputOptions.Builder(contentResolver, videoUri)
             .setContentValues(contentValues).build()
 
