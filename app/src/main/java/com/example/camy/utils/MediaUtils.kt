@@ -1,6 +1,13 @@
 package com.example.camy.utils
 import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
 import android.os.Build
+import android.os.storage.StorageManager
+import android.util.Log
+import androidx.documentfile.provider.DocumentFile
+import java.io.InputStream
+import java.io.OutputStream
 
 fun createMediaContentValues(type: String, storageChoice: String): ContentValues {
     val dateSys = System.currentTimeMillis()
@@ -27,3 +34,43 @@ fun createMediaContentValues(type: String, storageChoice: String): ContentValues
         }
     }
 }
+
+fun copyStream(input: InputStream, output: OutputStream) {
+    val buffer = ByteArray(16 * 1024) // 16 KB
+    var totalBytes = 0
+    var bytesRead: Int
+    while (input.read(buffer).also { bytesRead = it } != -1) {
+        output.write(buffer, 0, bytesRead)
+        totalBytes += bytesRead
+    }
+    output.flush()
+    Log.d("copyStream", "Total bytes copiados: $totalBytes")
+}
+
+
+fun getRemovableSDTreeUri(context: Context): Uri? {
+    val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
+    val volumes = sm.storageVolumes
+    for (volume in volumes) {
+        if (volume.isRemovable && !volume.isPrimary) {
+            val uuid = volume.uuid
+            if (!uuid.isNullOrEmpty()) {
+                return Uri.parse("content://com.android.externalstorage.documents/tree/${uuid}%3A")
+            }
+        }
+    }
+    return null
+}
+
+fun getOrCreateDefaultFolder(context: Context, treeUri: Uri, folderName: String): DocumentFile? {
+    val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+    var folder = rootDoc.findFile(folderName)
+    if (folder == null || !folder.isDirectory) {
+        folder = rootDoc.createDirectory(folderName)
+    }
+    return folder
+}
+
+
+
+

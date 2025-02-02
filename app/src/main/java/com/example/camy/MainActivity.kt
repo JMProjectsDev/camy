@@ -8,6 +8,8 @@ import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -32,7 +34,15 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
+import com.example.camy.utils.copyStream
 import com.example.camy.utils.createMediaContentValues
+import com.example.camy.utils.getOrCreateDefaultFolder
+import com.example.camy.utils.getRemovableSDTreeUri
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 
 class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSavedListener {
 
@@ -57,7 +67,7 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
     private lateinit var llTimerContainer: LinearLayout
     private lateinit var tvTimer: TextView
 
-    // Para el cronómetro
+    // Para el cronometro
     private var timerSeconds = 0
     private var timerHandler = Handler(Looper.getMainLooper())
     private var isTimerRunning = false
@@ -292,44 +302,134 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
 
     private fun capturePhoto() {
         val imgCapture = imageCapture ?: return
-        Log.d("MainActivity", "Capturando foto en la Activity...")
+        Log.d("MainActivity", "Capturando foto...")
 
-        // Obtener almacenamiento seleccionado
+        val cacheDirectory = externalCacheDir ?: cacheDir
+        val tempFile = File.createTempFile("temp_photo_", ".jpg", cacheDirectory)
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(tempFile).build()
+
+        imgCapture.takePicture(outputOptions,
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    Log.d("MainActivity", "Temp file size: ${tempFile.length()} bytes")
+
+                    val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
+                    val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
+                    val fileName = "photo_${System.currentTimeMillis()}.jpg"
+                    if (storageChoice == "external") {
+                        saveFileToSd(tempFile, "image/jpeg", fileName)
+                    } else {
+                        saveFileToMediaStore(tempFile, "image/jpeg", fileName)
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    Log.e("MainActivity", "Error al capturar foto: ${exception.message}", exception)
+                    Toast.makeText(
+                        this@MainActivity, "Error: ${exception.message}", Toast.LENGTH_LONG
+                    ).show()
+                }
+            })
+    }
+
+    private fun saveFileToSd(tempFile: File, mimeType: String, displayName: String) {
         val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
-        val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
+        var treeUriString = prefs.getString("sd_tree_uri", null)
+        // Si no hay URI almacenada, intentamos detectarla automáticamente.
+        if (treeUriString.isNullOrEmpty()) {
+            val autoTreeUri = getRemovableSDTreeUri(this)
+            if (autoTreeUri != null) {
+                treeUriString = autoTreeUri.toString()
+                prefs.edit().putString("sd_tree_uri", treeUriString).apply()
+            } else {
+                Toast.makeText(this, "No se pudo detectar la SD", Toast.LENGTH_LONG).show()
+                return
+            }
+        }
+        val treeUri = Uri.parse(treeUriString)
+        val rootDoc = DocumentFile.fromTreeUri(this, treeUri)
+        if (rootDoc == null || !rootDoc.canWrite()) {
+            Toast.makeText(this, "No se puede escribir en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        // Elegimos la carpeta por defecto: "Camy-Pictures" para imágenes y "Camy-Videos" para vídeos.
+        val folderName = if (mimeType.startsWith("image")) "Camy-Pictures" else "Camy-Videos"
+        val folder = getOrCreateDefaultFolder(this, treeUri, folderName)
+        if (folder == null) {
+            Toast.makeText(this, "No se pudo crear la carpeta $folderName en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        val newFile = folder.createFile(mimeType, displayName)
+        if (newFile == null) {
+            Toast.makeText(this, "Error al crear el archivo en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            // Abrir el descriptor y copiar los datos
+            contentResolver.openFileDescriptor(newFile.uri, "w")?.use { pfd ->
+                FileOutputStream(pfd.fileDescriptor).use { outputStream ->
+                    tempFile.inputStream().use { inputStream ->
+                        copyStream(inputStream, outputStream)
+                    }
+                    // Forzar que se escriban los datos
+                    outputStream.channel.force(true)
+                }
+            } ?: run {
+                Toast.makeText(this, "No se pudo abrir el descriptor para escribir", Toast.LENGTH_LONG).show()
+                return
+            }
+            // Forzar un reescaneo de la MediaStore (puedes ajustar el delay si es necesario)
+            Handler(Looper.getMainLooper()).postDelayed({
+                MediaScannerConnection.scanFile(this, arrayOf(newFile.uri.toString()), arrayOf(mimeType), null)
+            }, 1000)
+            Toast.makeText(this, "Archivo guardado en la SD en la carpeta $folderName", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Error al guardar en la SD: ${e.message}", Toast.LENGTH_LONG).show()
+        } finally {
+            tempFile.delete()
+        }
+    }
 
-        // Crear ContentValues dinamicos
-        val contentValues = createMediaContentValues("image", storageChoice)
+
+
+    /**
+     * Guarda un archivo (foto o vídeo) en MediaStore (almacenamiento interno)
+     */
+    private fun saveFileToMediaStore(tempFile: File, mimeType: String, displayName: String) {
+        val contentValues = createMediaContentValues("image", "internal").apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+        }
         val outputUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
-
-        val outputOptions =
-            ImageCapture.OutputFileOptions.Builder(contentResolver, outputUri, contentValues)
-                .build()
-
-        imgCapture.takePicture(outputOptions,
-            ContextCompat.getMainExecutor(this),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    Log.d("MainActivity", "Foto guardada correctamente")
-                    Toast.makeText(
-                        this@MainActivity, "Foto guardada correctamente", Toast.LENGTH_LONG
-                    ).show()
+        val resolver = contentResolver
+        val uri = resolver.insert(outputUri, contentValues)
+        if (uri == null) {
+            Toast.makeText(this, "Error al crear URI en MediaStore", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                tempFile.inputStream().use { inputStream ->
+                    inputStream.copyTo(outputStream)
                 }
-
-                override fun onError(exception: ImageCaptureException) {
-                    Log.e("MainActivity", "Error al guardar foto: ${exception.message}", exception)
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Error al capturar foto: ${exception.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            })
+            }
+            Toast.makeText(this, "Foto guardada en almacenamiento interno", Toast.LENGTH_SHORT)
+                .show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Error al guardar en interno: ${e.message}", Toast.LENGTH_LONG)
+                .show()
+        } finally {
+            tempFile.delete()
+        }
     }
+
 
     /** Activa/desactiva flash localmente mientras estamos en modo foto. */
     private fun toggleFlashForPhoto(enable: Boolean) {
@@ -444,9 +544,9 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         val secs = seconds % 60
 
         val timeStr = if (hours > 0) {
-            String.format("%02d:%02d:%02d", hours, minutes, secs) // Formato con horas
+            String.format("%02d:%02d:%02d", hours, minutes, secs)
         } else {
-            String.format("%02d:%02d", minutes, secs) // Formato sin horas
+            String.format("%02d:%02d", minutes, secs)
         }
         tvTimer.text = timeStr
     }

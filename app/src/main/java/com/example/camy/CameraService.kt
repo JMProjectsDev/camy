@@ -5,12 +5,17 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.util.Log
 import android.view.Surface
+import android.widget.Toast
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -24,15 +29,18 @@ import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import com.example.camy.utils.copyStream
 import com.example.camy.utils.createMediaContentValues
+import com.example.camy.utils.getOrCreateDefaultFolder
+import java.io.FileOutputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class CameraService : Service(), LifecycleOwner {
-
     private val lifecycleRegistry: LifecycleRegistry by lazy { LifecycleRegistry(this) }
 
     override val lifecycle: Lifecycle
@@ -69,12 +77,10 @@ class CameraService : Service(), LifecycleOwner {
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
 
-        // WakeLock
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp:CameraWakelock")
         wakeLock?.acquire()
 
-        // Executor
         cameraExecutor = Executors.newSingleThreadExecutor()
     }
 
@@ -128,7 +134,6 @@ class CameraService : Service(), LifecycleOwner {
             val cameraProvider = cameraProviderFuture.get()
             cameraProvider.unbindAll()
 
-            // Preparamos un Recorder
             val recorder =
                 Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD)).build()
             videoCapture = VideoCapture.withOutput(recorder)
@@ -155,21 +160,18 @@ class CameraService : Service(), LifecycleOwner {
         val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
         val recordAudio = prefs.getBoolean("recordAudio", true)
         val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
-
-        // Crear ContentValues dinamicos
         val contentValues = createMediaContentValues("video", storageChoice)
+
         val videoUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         }
-
         val outputOptions = MediaStoreOutputOptions.Builder(contentResolver, videoUri)
             .setContentValues(contentValues).build()
 
         try {
             var recording = videoCapture?.output?.prepareRecording(this, outputOptions)
-
             if (recordAudio) {
                 recording = recording?.withAudioEnabled()
             }
@@ -177,9 +179,7 @@ class CameraService : Service(), LifecycleOwner {
                 when (event) {
                     is VideoRecordEvent.Start -> {
                         isRecording = true
-                        Log.d(
-                            TAG, "Grabación iniciada. audio=$recordAudio, storage=$storageChoice"
-                        )
+                        Log.d(TAG, "Grabación iniciada. audio=$recordAudio, storage=$storageChoice")
                     }
 
                     is VideoRecordEvent.Status -> {
@@ -192,6 +192,19 @@ class CameraService : Service(), LifecycleOwner {
                             isRecording = false
                         }
                         Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
+
+                        if (storageChoice == "external") {
+                            copyVideoFromMediaStoreToSd(
+                                event.outputResults.outputUri,
+                                "video/mp4",
+                                "video_${System.currentTimeMillis()}.mp4"
+                            )
+                        } else {
+                            Toast.makeText(
+                                this, "Vídeo guardado en almacenamiento interno", Toast.LENGTH_SHORT
+                            ).show()
+                        }
+
                         if (pendingSplit) {
                             pendingSplit = false
                             startRecordingVideo()
@@ -203,6 +216,47 @@ class CameraService : Service(), LifecycleOwner {
             }
         } catch (se: SecurityException) {
             Log.e(TAG, "SecurityException al grabar: ${se.message}", se)
+        }
+    }
+
+    private fun copyVideoFromMediaStoreToSd(sourceUri: Uri, mimeType: String, displayName: String) {
+        val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
+        val treeUriString = prefs.getString("sd_tree_uri", null)
+        if (treeUriString.isNullOrEmpty()) {
+            Toast.makeText(this, "No se ha seleccionado carpeta en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        val treeUri = Uri.parse(treeUriString)
+
+        // Usamos la función auxiliar para obtener (o crear) la carpeta "Camy-Videos" en la SD
+        val folder = getOrCreateDefaultFolder(this, treeUri, "Camy-Videos")
+        if (folder == null) {
+            Toast.makeText(this, "No se pudo crear la carpeta Camy-Videos en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        // Creamos el archivo en la carpeta obtenida
+        val newFile = folder.createFile(mimeType, displayName)
+        if (newFile == null) {
+            Toast.makeText(this, "Error al crear el archivo en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            contentResolver.openInputStream(sourceUri)?.use { inputStream ->
+                contentResolver.openFileDescriptor(newFile.uri, "w")?.use { pfd ->
+                    FileOutputStream(pfd.fileDescriptor).use { outputStream ->
+                        copyStream(inputStream, outputStream)
+                    }
+                }
+            }
+            // Notificamos a MediaStore (opcional, con delay si es necesario)
+            Handler(Looper.getMainLooper()).postDelayed({
+                MediaScannerConnection.scanFile(this, arrayOf(newFile.uri.toString()), arrayOf(mimeType), null)
+            }, 1000)
+            Toast.makeText(this, "Vídeo guardado en la SD en la carpeta Camy-Videos", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Error al copiar el vídeo: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
