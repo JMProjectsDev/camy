@@ -5,10 +5,9 @@ import android.app.Dialog
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
-import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -20,9 +19,7 @@ import android.widget.Spinner
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.documentfile.provider.DocumentFile
 import androidx.fragment.app.DialogFragment
-import com.example.camy.utils.getRemovableSDTreeUri
 
 class SettingsDialogFragment : DialogFragment() {
 
@@ -104,29 +101,17 @@ class SettingsDialogFragment : DialogFragment() {
                 listener?.onSettingsSaved(newRecordAudio, newStorageChoice)
                 dismiss()
             } else {
-                var savedTreeUri = prefs.getString("sd_tree_uri", null)
-                if (savedTreeUri.isNullOrEmpty()) {
-                    val autoUri = getRemovableSDTreeUri(requireContext())
-                    if (autoUri != null) {
-                        val doc = DocumentFile.fromTreeUri(requireContext(), autoUri)
-                        if (doc != null && doc.canWrite()) {
-                            savedTreeUri = autoUri.toString()
-                            prefs.edit().putString("sd_tree_uri", savedTreeUri).apply()
-                            listener?.onSettingsSaved(newRecordAudio, newStorageChoice)
-                            dismiss()
-                        } else {
-                            Toast.makeText(requireContext(), "No se pudo detectar la SD con permisos; por favor, seleccione la carpeta", Toast.LENGTH_LONG).show()
-                            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                                addFlags(
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                                            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-                                )
-                            }
-                            sdFolderLauncher.launch(intent)
-                        }
-                    } else {
-                        Toast.makeText(requireContext(), "No se pudo detectar la SD; por favor, seleccione la carpeta", Toast.LENGTH_LONG).show()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    listener?.onSettingsSaved(newRecordAudio, newStorageChoice)
+                    dismiss()
+                } else {
+                    val savedTreeUri = prefs.getString("sd_tree_uri", null)
+                    if (savedTreeUri.isNullOrEmpty()) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Selecciona la carpeta de la SD para guardar el contenido.",
+                            Toast.LENGTH_LONG
+                        ).show()
                         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
                             addFlags(
                                 Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -135,10 +120,10 @@ class SettingsDialogFragment : DialogFragment() {
                             )
                         }
                         sdFolderLauncher.launch(intent)
+                    } else {
+                        listener?.onSettingsSaved(newRecordAudio, newStorageChoice)
+                        dismiss()
                     }
-                } else {
-                    listener?.onSettingsSaved(newRecordAudio, newStorageChoice)
-                    dismiss()
                 }
             }
         }

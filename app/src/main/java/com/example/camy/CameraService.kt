@@ -3,14 +3,10 @@ package com.example.camy
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.Service
 import android.content.Intent
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
-import android.os.Handler
-import android.os.IBinder
-import android.os.Looper
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.util.Log
@@ -20,6 +16,7 @@ import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
@@ -29,30 +26,30 @@ import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.documentfile.provider.DocumentFile
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.LifecycleService
 import com.example.camy.utils.copyStream
 import com.example.camy.utils.createMediaContentValues
 import com.example.camy.utils.getOrCreateDefaultFolder
+import com.example.camy.utils.getVideosVolumeUriForSd
+import com.google.common.util.concurrent.ListenableFuture
 import java.io.FileOutputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-class CameraService : Service(), LifecycleOwner {
-    private val lifecycleRegistry: LifecycleRegistry by lazy { LifecycleRegistry(this) }
+@Volatile
+private var broadcastSent = false
 
-    override val lifecycle: Lifecycle
-        get() = lifecycleRegistry
+class CameraService : LifecycleService() {
 
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
     private var imageCapture: ImageCapture? = null
     private var cameraControl: CameraControl? = null
+    private var cameraProvider: ProcessCameraProvider? = null
 
     private var isRecording = false
     private var isFlashOn = false
+    private var shouldStopSelfAfterFinalize = false
 
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var cameraExecutor: ExecutorService
@@ -72,7 +69,6 @@ class CameraService : Service(), LifecycleOwner {
 
     override fun onCreate() {
         super.onCreate()
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
 
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
@@ -85,7 +81,7 @@ class CameraService : Service(), LifecycleOwner {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        super.onStartCommand(intent, flags, startId)
 
         when (intent?.action) {
             "com.example.camy.ACTION_ROTATION_CHANGED" -> {
@@ -113,9 +109,10 @@ class CameraService : Service(), LifecycleOwner {
 
             CameraServiceActions.ACTION_STOP_RECORDING -> {
                 if (isRecording) {
+                    safeDisableTorch()
+                    shouldStopSelfAfterFinalize = true
                     stopRecordingVideo()
                 }
-                stopSelf()
             }
 
             CameraServiceActions.ACTION_TOGGLE_FLASH -> {
@@ -131,25 +128,36 @@ class CameraService : Service(), LifecycleOwner {
     private fun startCameraAndRecording(rotation: Int) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-            cameraProvider.unbindAll()
+            // Obtener provider y soltar cualquier use case previo
+            cameraProvider = cameraProviderFuture.get().also { prov ->
+                try {
+                    prov.unbindAll()
+                } catch (e: Exception) {
+                    Log.w(TAG, "unbindAll() lanzó excepción previa al bind: ${e.message}")
+                }
+            }
 
-            val recorder =
-                Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD)).build()
+            val recorder = Recorder.Builder().setQualitySelector(
+                QualitySelector.from(
+                    Quality.FHD, FallbackStrategy.higherQualityOrLowerThan(Quality.HD)
+                )
+            ).build()
             videoCapture = VideoCapture.withOutput(recorder)
-
-            imageCapture = ImageCapture.Builder().build()
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
-                val camera = cameraProvider.bindToLifecycle(
-                    this, cameraSelector, videoCapture, imageCapture
-                )
-                videoCapture?.targetRotation = rotation
-                cameraControl = camera.cameraControl
+                // IMPORTANTE: bindToLifecycle con este Service como LifecycleOwner
+                val camera = cameraProvider?.bindToLifecycle(this, cameraSelector, videoCapture)
+                cameraControl = camera?.cameraControl
 
+                // Fijar rotación objetivo ANTES de iniciar la grabación
+                videoCapture?.targetRotation = rotation
+
+                Log.d(TAG, "CameraX vinculada en Service. targetRotation=$rotation")
                 startRecordingVideo()
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "IllegalState al bindear camera: ${e.message}", e)
             } catch (e: Exception) {
                 Log.e(TAG, "Error al abrir la cámara: ${e.message}", e)
             }
@@ -160,25 +168,32 @@ class CameraService : Service(), LifecycleOwner {
         val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
         val recordAudio = prefs.getBoolean("recordAudio", true)
         val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
-        val contentValues = createMediaContentValues("video", storageChoice)
 
+        val contentValues = createMediaContentValues("video")
         val videoUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            if (storageChoice == "external") getVideosVolumeUriForSd(this)
+            else MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         }
+
         val outputOptions = MediaStoreOutputOptions.Builder(contentResolver, videoUri)
             .setContentValues(contentValues).build()
 
         try {
-            var recording = videoCapture?.output?.prepareRecording(this, outputOptions)
-            if (recordAudio) {
-                recording = recording?.withAudioEnabled()
+            val output = videoCapture?.output ?: run {
+                Log.e(TAG, "videoCapture.output es null; ¿falló el bind?")
+                return
             }
-            activeRecording = recording?.start(ContextCompat.getMainExecutor(this)) { event ->
+
+            var recording = output.prepareRecording(this, outputOptions)
+            if (recordAudio) recording = recording.withAudioEnabled()
+
+            activeRecording = recording.start(ContextCompat.getMainExecutor(this)) { event ->
                 when (event) {
                     is VideoRecordEvent.Start -> {
                         isRecording = true
+                        broadcastSent = false
                         Log.d(TAG, "Grabación iniciada. audio=$recordAudio, storage=$storageChoice")
                     }
 
@@ -188,38 +203,129 @@ class CameraService : Service(), LifecycleOwner {
                     }
 
                     is VideoRecordEvent.Finalize -> {
-                        if (isRecording) {
-                            isRecording = false
-                        }
-                        Log.d(TAG, "Grabación finalizada: ${event.outputResults.outputUri}")
+                        if (isRecording) isRecording = false
+                        val outUri = event.outputResults.outputUri
+                        Log.d(TAG, "Grabación finalizada: $outUri (error=${event.error})")
 
-                        if (storageChoice == "external") {
+                        if (storageChoice == "external" && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            // Solo PRE-Q: copiar a SD por SAF
                             copyVideoFromMediaStoreToSd(
-                                event.outputResults.outputUri,
-                                "video/mp4",
-                                "video_${System.currentTimeMillis()}.mp4"
+                                outUri, "video/mp4", "video_${System.currentTimeMillis()}.mp4"
                             )
                         } else {
-                            Toast.makeText(
-                                this, "Vídeo guardado en almacenamiento interno", Toast.LENGTH_SHORT
-                            ).show()
+                            val where =
+                                if (storageChoice == "external") "SD" else "almacenamiento interno"
+                            Toast.makeText(this, "Vídeo guardado en $where", Toast.LENGTH_SHORT)
+                                .show()
                         }
 
                         if (pendingSplit) {
                             pendingSplit = false
                             startRecordingVideo()
+                        } else {
+                            if (shouldStopSelfAfterFinalize) {
+                                hardReleaseAndStopSelf()
+                            }
                         }
                     }
-
-                    else -> {}
                 }
             }
         } catch (se: SecurityException) {
             Log.e(TAG, "SecurityException al grabar: ${se.message}", se)
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "IllegalState en startRecordingVideo: ${e.message}", e)
         }
     }
 
-    private fun copyVideoFromMediaStoreToSd(sourceUri: Uri, mimeType: String, displayName: String) {
+    private fun hardReleaseAndStopSelf() {
+        shouldStopSelfAfterFinalize = false
+        safeDisableTorch()
+
+        val provider = cameraProvider
+        try {
+            provider?.unbindAll()
+        } catch (e: Exception) {
+            Log.w(TAG, "unbindAll() en hardRelease lanzó: ${e.message}")
+        }
+        videoCapture = null
+        imageCapture = null
+        cameraControl = null
+
+        val provFuture = tryCallProviderShutdownReflectively(provider)
+        if (provFuture != null) {
+            attachCompletion(provFuture) {
+                cameraProvider = null
+                sendStoppedBroadcastOnce()
+                stopSelf()
+            }
+            return
+        }
+
+        val camxFuture = tryCallCameraXShutdownReflectively()
+        if (camxFuture != null) {
+            attachCompletion(camxFuture) {
+                cameraProvider = null
+                sendStoppedBroadcastOnce()
+                stopSelf()
+            }
+            return
+        }
+
+        cameraProvider = null
+        sendStoppedBroadcastOnce()
+        stopSelf()
+    }
+
+    private fun sendStoppedBroadcastOnce() {
+        if (broadcastSent) return
+        broadcastSent = true
+        sendBroadcast(Intent(ACTION_SERVICE_STOPPED))
+    }
+
+    private fun tryCallProviderShutdownReflectively(provider: ProcessCameraProvider?): ListenableFuture<*>? {
+        if (provider == null) return null
+        return try {
+            val m =
+                provider.javaClass.methods.firstOrNull { it.name == "shutdown" && it.parameterCount == 0 }
+            val future = m?.invoke(provider)
+            future as? ListenableFuture<*>
+        } catch (e: Throwable) {
+            Log.w(TAG, "provider.shutdown() no disponible: ${e.message}")
+            null
+        }
+    }
+
+    private fun tryCallCameraXShutdownReflectively(): ListenableFuture<*>? {
+        return try {
+            val clazz = Class.forName("androidx.camera.core.CameraX")
+            val method =
+                clazz.methods.firstOrNull { it.name == "shutdown" && it.parameterCount == 0 }
+            val future = method?.invoke(null)
+            future as? ListenableFuture<*>
+        } catch (e: Throwable) {
+            Log.w(TAG, "CameraX.shutdown() no disponible: ${e.message}")
+            null
+        }
+    }
+
+    private fun attachCompletion(future: ListenableFuture<*>, onDone: () -> Unit) {
+        try {
+            future.addListener({
+                try {
+                    onDone()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error en onDone(): ${e.message}", e)
+                }
+            }, ContextCompat.getMainExecutor(this))
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo adjuntar listener al future: ${e.message}")
+            onDone()
+        }
+    }
+
+    private fun copyVideoFromMediaStoreToSd(
+        sourceUri: Uri, mimeType: String, displayName: String
+    ) {
         val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
         val treeUriString = prefs.getString("sd_tree_uri", null)
         if (treeUriString.isNullOrEmpty()) {
@@ -228,14 +334,14 @@ class CameraService : Service(), LifecycleOwner {
         }
         val treeUri = Uri.parse(treeUriString)
 
-        // Usamos la función auxiliar para obtener (o crear) la carpeta "Camy-Videos" en la SD
         val folder = getOrCreateDefaultFolder(this, treeUri, "Camy-Videos")
         if (folder == null) {
-            Toast.makeText(this, "No se pudo crear la carpeta Camy-Videos en la SD", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                this, "No se pudo crear la carpeta Camy-Videos en la SD", Toast.LENGTH_LONG
+            ).show()
             return
         }
 
-        // Creamos el archivo en la carpeta obtenida
         val newFile = folder.createFile(mimeType, displayName)
         if (newFile == null) {
             Toast.makeText(this, "Error al crear el archivo en la SD", Toast.LENGTH_LONG).show()
@@ -249,17 +355,18 @@ class CameraService : Service(), LifecycleOwner {
                     }
                 }
             }
-            // Notificamos a MediaStore (opcional, con delay si es necesario)
-            Handler(Looper.getMainLooper()).postDelayed({
-                MediaScannerConnection.scanFile(this, arrayOf(newFile.uri.toString()), arrayOf(mimeType), null)
-            }, 1000)
-            Toast.makeText(this, "Vídeo guardado en la SD en la carpeta Camy-Videos", Toast.LENGTH_SHORT).show()
+            MediaScannerConnection.scanFile(
+                this, arrayOf(newFile.uri.toString()), arrayOf(mimeType), null
+            )
+
+            Toast.makeText(
+                this, "Vídeo guardado en la SD en la carpeta Camy-Videos", Toast.LENGTH_SHORT
+            ).show()
         } catch (e: Exception) {
             e.printStackTrace()
             Toast.makeText(this, "Error al copiar el vídeo: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
-
 
     private fun stopRecordingVideo() {
         if (isRecording) {
@@ -277,6 +384,31 @@ class CameraService : Service(), LifecycleOwner {
             activeRecording?.stop()
             activeRecording = null
         }
+    }
+
+    private fun safeDisableTorch() {
+        try {
+            if (isFlashOn) {
+                cameraControl?.enableTorch(false)
+                isFlashOn = false
+                Log.d(TAG, "Torch forzada a OFF")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error apagando torch: ${e.message}", e)
+        }
+    }
+
+    private fun cleanupCamera() {
+        safeDisableTorch()
+        try {
+            cameraProvider?.unbindAll()
+        } catch (e: Exception) {
+            Log.w(TAG, "unbindAll lanzó excepción: ${e.message}", e)
+        }
+        videoCapture = null
+        imageCapture = null
+        cameraControl = null
+        cameraProvider = null
     }
 
     private fun createNotification(): Notification {
@@ -310,18 +442,24 @@ class CameraService : Service(), LifecycleOwner {
     }
 
     override fun onDestroy() {
-        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
 
         stopRecordingVideo()
+        cleanupCamera()
 
-        // Emitir broadcast de servicio detenido
-        val bcIntent = Intent(ACTION_SERVICE_STOPPED)
-        sendBroadcast(bcIntent)
+        if (!broadcastSent) {
+            sendStoppedBroadcastOnce()
+        }
 
-        wakeLock?.release()
+        try {
+            wakeLock?.release()
+        } catch (_: Exception) {
+        }
         wakeLock = null
-        cameraExecutor.shutdown()
+        try {
+            cameraExecutor.shutdown()
+        } catch (_: Exception) {
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -329,8 +467,6 @@ class CameraService : Service(), LifecycleOwner {
         stopRecordingVideo()
         stopSelf()
     }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
         private const val TAG = "CameraService"

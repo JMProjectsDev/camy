@@ -2,13 +2,13 @@ package com.example.camy
 
 import android.Manifest
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -35,14 +35,11 @@ import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
-import com.example.camy.utils.copyStream
 import com.example.camy.utils.createMediaContentValues
+import com.example.camy.utils.getImagesVolumeUriForSd
 import com.example.camy.utils.getOrCreateDefaultFolder
-import com.example.camy.utils.getRemovableSDTreeUri
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.io.OutputStream
 
 class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSavedListener {
 
@@ -52,6 +49,8 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
     private lateinit var btnCapture: ImageView
     private lateinit var btnToggleMode: ImageView
     private lateinit var btnSettings: ImageButton
+    private var waitingServiceStop = false
+    private val serviceStopTimeoutMs = 1200L
 
     // Estados
     private var isPhotoMode = false
@@ -101,7 +100,6 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Ahora dentro de onCreate, ya se puede usar this para getSystemService
         orientationListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
                 if (orientation == ORIENTATION_UNKNOWN) return
@@ -157,6 +155,11 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         }
 
         btnSettings.setOnClickListener {
+            if (isRecording) {
+                Toast.makeText(this, "No disponible mientras se está grabando", Toast.LENGTH_SHORT)
+                    .show()
+                return@setOnClickListener
+            }
             showSettingsDialog()
         }
 
@@ -180,15 +183,37 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
 
                     isRecording = true
                     btnFlash.isEnabled = true
+                    btnSettings.isEnabled = false
                     btnCapture.setImageResource(R.drawable.ic_stop)
                     animateIconSize(btnCapture, 22)
                     btnCapture.setBackgroundResource(R.drawable.circle_red)
                 } else {
+                    if (isFlashOn) {
+                        isFlashOn = false
+                        updateFlashUI(false)
+                    }
                     val intent = Intent(this, CameraService::class.java).apply {
                         action = CameraService.CameraServiceActions.ACTION_STOP_RECORDING
                     }
                     startService(intent)
                     stopTimer()
+
+                    // Señal de espera por broadcast y timeout de rescate
+                    waitingServiceStop = true
+                    previewView.postDelayed({
+                        if (waitingServiceStop) {
+                            Log.w(
+                                "MainActivity",
+                                "Timeout esperando ACTION_SERVICE_STOPPED → reinicio por fallback"
+                            )
+                            // Por si quedara algún surface colgado, soltamos y reintentamos con backoff
+                            try {
+                                stopPreviewInActivity()
+                            } catch (_: Exception) {
+                            }
+                            retryStartPreviewWithBackoff()
+                        }
+                    }, serviceStopTimeoutMs)
 
                     // Forzar linterna apagada
                     isFlashOn = false
@@ -198,6 +223,7 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
                     unlockOrientation()
 
                     isRecording = false
+                    btnSettings.isEnabled = true
                     btnCapture.setImageResource(R.drawable.ic_video)
                     animateIconSize(btnCapture, 38)
                     btnCapture.setBackgroundResource(R.drawable.circle_button_large)
@@ -239,12 +265,21 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         registerReceiver(serviceStoppedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         // No poner anotaciones ya que restringira la funcion a la version de la API.
         orientationListener.enable()
+
+        isFlashOn = false
+        updateFlashUI(false)
     }
 
     override fun onPause() {
         super.onPause()
         unregisterReceiver(serviceStoppedReceiver)
         orientationListener.disable()
+
+        if (isPhotoMode && isFlashOn) {
+            toggleFlashForPhoto(false)
+        }
+        isFlashOn = false
+        updateFlashUI(false)
     }
 
     override fun onDestroy() {
@@ -254,16 +289,22 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         }
     }
 
-
-    /** Inicia la preview para tomar fotos en la Activity. */
+    // Inicia la preview para tomar fotos en la Activity
     private fun startPreviewInActivity() {
+        if (cameraProvider != null && previewUseCase != null && imageCapture != null) {
+            Log.d("MainActivity", "Preview ya activa, ignorando reinicio.")
+            return
+        }
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             cameraProvider = cameraProviderFuture.get()
-            cameraProvider?.unbindAll()
+            try {
+                cameraProvider?.unbindAll()
+            } catch (_: Exception) {
+            }
+            val rotation = previewView.display?.rotation ?: Surface.ROTATION_0
+            val preview = Preview.Builder().setTargetRotation(rotation).build()
 
-            // Se crea el Preview y el ImageCapture
-            val preview = Preview.Builder().build()
             val imgCapture = ImageCapture.Builder().setJpegQuality(50).build()
             previewUseCase = preview
             imageCapture = imgCapture
@@ -277,7 +318,10 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
                 // Si no se pone esto el flash no funciona
                 cameraControl = camera?.cameraControl
 
-                // Conectamos el preview al PreviewView
+                toggleFlashForPhoto(false)
+                isFlashOn = false
+                updateFlashUI(false)
+
                 preview.setSurfaceProvider(previewView.surfaceProvider)
 
                 Log.d("MainActivity", "Preview de fotos iniciada.")
@@ -287,11 +331,10 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         }, ContextCompat.getMainExecutor(this))
     }
 
-    /** Para la preview si vamos a ceder la cámara al Service. */
     private fun stopPreviewInActivity() {
         try {
+            previewUseCase?.setSurfaceProvider(null)
             cameraProvider?.unbindAll()
-            cameraProvider = null
             previewUseCase = null
             imageCapture = null
             cameraControl = null
@@ -318,7 +361,13 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
                     val storageChoice = prefs.getString("storageChoice", "internal") ?: "internal"
                     val fileName = "photo_${System.currentTimeMillis()}.jpg"
                     if (storageChoice == "external") {
-                        saveFileToSd(tempFile, "image/jpeg", fileName)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            savePhotoToSdMediaStoreQPlus(tempFile, fileName)
+                        } else {
+                            saveFileToSdUsingSafPreQ(
+                                tempFile, "image/jpeg", fileName, "Camy-Pictures"
+                            )
+                        }
                     } else {
                         saveFileToMediaStore(tempFile, "image/jpeg", fileName)
                     }
@@ -333,72 +382,78 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
             })
     }
 
-    private fun saveFileToSd(tempFile: File, mimeType: String, displayName: String) {
-        val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
-        var treeUriString = prefs.getString("sd_tree_uri", null)
-        // Si no hay URI almacenada, intentamos detectarla automáticamente.
-        if (treeUriString.isNullOrEmpty()) {
-            val autoTreeUri = getRemovableSDTreeUri(this)
-            if (autoTreeUri != null) {
-                treeUriString = autoTreeUri.toString()
-                prefs.edit().putString("sd_tree_uri", treeUriString).apply()
-            } else {
-                Toast.makeText(this, "No se pudo detectar la SD", Toast.LENGTH_LONG).show()
-                return
-            }
+    private fun savePhotoToSdMediaStoreQPlus(tempFile: File, displayName: String) {
+        val resolver = contentResolver
+        val imagesUri = getImagesVolumeUriForSd(this)
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/Camy-Pictures")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val treeUri = Uri.parse(treeUriString)
-        val rootDoc = DocumentFile.fromTreeUri(this, treeUri)
-        if (rootDoc == null || !rootDoc.canWrite()) {
-            Toast.makeText(this, "No se puede escribir en la SD", Toast.LENGTH_LONG).show()
-            return
-        }
-        // Elegimos la carpeta por defecto: "Camy-Pictures" para imágenes y "Camy-Videos" para vídeos.
-        val folderName = if (mimeType.startsWith("image")) "Camy-Pictures" else "Camy-Videos"
-        val folder = getOrCreateDefaultFolder(this, treeUri, folderName)
-        if (folder == null) {
-            Toast.makeText(this, "No se pudo crear la carpeta $folderName en la SD", Toast.LENGTH_LONG).show()
-            return
-        }
-        val newFile = folder.createFile(mimeType, displayName)
-        if (newFile == null) {
-            Toast.makeText(this, "Error al crear el archivo en la SD", Toast.LENGTH_LONG).show()
+        val uri = resolver.insert(imagesUri, values) ?: run {
+            Toast.makeText(this, "No se pudo crear el item en MediaStore (SD)", Toast.LENGTH_LONG)
+                .show()
+            tempFile.delete()
             return
         }
         try {
-            // Abrir el descriptor y copiar los datos
-            contentResolver.openFileDescriptor(newFile.uri, "w")?.use { pfd ->
-                FileOutputStream(pfd.fileDescriptor).use { outputStream ->
-                    tempFile.inputStream().use { inputStream ->
-                        copyStream(inputStream, outputStream)
-                    }
-                    // Forzar que se escriban los datos
-                    outputStream.channel.force(true)
-                }
-            } ?: run {
-                Toast.makeText(this, "No se pudo abrir el descriptor para escribir", Toast.LENGTH_LONG).show()
-                return
+            resolver.openOutputStream(uri)?.use { out ->
+                tempFile.inputStream().use { it.copyTo(out) }
             }
-            // Forzar un reescaneo de la MediaStore (puedes ajustar el delay si es necesario)
-            Handler(Looper.getMainLooper()).postDelayed({
-                MediaScannerConnection.scanFile(this, arrayOf(newFile.uri.toString()), arrayOf(mimeType), null)
-            }, 1000)
-            Toast.makeText(this, "Archivo guardado en la SD en la carpeta $folderName", Toast.LENGTH_SHORT).show()
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            Toast.makeText(this, "Foto guardada en SD", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(this, "Error al guardar en la SD: ${e.message}", Toast.LENGTH_LONG).show()
+            resolver.delete(uri, null, null)
+            Toast.makeText(this, "Error guardando en SD: ${e.message}", Toast.LENGTH_LONG).show()
         } finally {
             tempFile.delete()
         }
     }
 
+    private fun saveFileToSdUsingSafPreQ(
+        tempFile: File, mimeType: String, displayName: String, defaultFolder: String
+    ) {
+        val prefs = getSharedPreferences("MyAppPrefs", MODE_PRIVATE)
+        val treeUriString = prefs.getString("sd_tree_uri", null)
+        if (treeUriString.isNullOrEmpty()) {
+            Toast.makeText(
+                this, "Selecciona primero la carpeta de la SD en Ajustes", Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val treeUri = Uri.parse(treeUriString)
+        val rootDoc = DocumentFile.fromTreeUri(this, treeUri)
+        if (rootDoc == null || !rootDoc.canWrite()) {
+            Toast.makeText(this, "Sin permisos de escritura en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        val folder = getOrCreateDefaultFolder(this, treeUri, defaultFolder) ?: run {
+            Toast.makeText(this, "No se pudo crear la carpeta en la SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        val newFile = folder.createFile(mimeType, displayName) ?: run {
+            Toast.makeText(this, "Error creando archivo en la SD", Toast.LENGTH_LONG).show(); return
+        }
+        try {
+            contentResolver.openFileDescriptor(newFile.uri, "w")?.use { pfd ->
+                FileOutputStream(pfd.fileDescriptor).use { out ->
+                    tempFile.inputStream().use { it.copyTo(out) }
+                }
+            }
+            Toast.makeText(this, "Archivo guardado en SD", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error SAF: ${e.message}", Toast.LENGTH_LONG).show()
+        } finally {
+            tempFile.delete()
+        }
+    }
 
-
-    /**
-     * Guarda un archivo (foto o vídeo) en MediaStore (almacenamiento interno)
-     */
+    // Guarda un archivo en MediaStore (almacenamiento interno)
     private fun saveFileToMediaStore(tempFile: File, mimeType: String, displayName: String) {
-        val contentValues = createMediaContentValues("image", "internal").apply {
+        val contentValues = createMediaContentValues("image").apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
         }
@@ -430,44 +485,87 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
         }
     }
 
-
-    /** Activa/desactiva flash localmente mientras estamos en modo foto. */
+    // Activa o desactiva flash mientras estamos en modo foto
     private fun toggleFlashForPhoto(enable: Boolean) {
         // Solo si la cámara está en la Activity
         if (cameraControl == null) {
-            Log.w(
-                "MainActivity",
-                "toggleFlashForPhoto: cameraControl es null (no hay cámara en la Activity)."
-            )
             return
         }
         cameraControl?.enableTorch(enable)
         Log.d("MainActivity", "Flash foto -> $enable")
     }
 
-
-    /**
-     * Recibe la notificación de que el Service se detuvo (ACTION_SERVICE_STOPPED).
-     * Con ello, volvemos a tomar la cámara para el modo foto.
-     */
     private val serviceStoppedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == CameraService.ACTION_SERVICE_STOPPED) {
+                waitingServiceStop = false
                 Log.d("MainActivity", "Recibido ACTION_SERVICE_STOPPED del Service.")
-                startPreviewInActivity()
+                isFlashOn = false
+                updateFlashUI(false)
+                isRecording = false
+                retryStartPreviewWithBackoff()
             }
         }
     }
 
-    private fun openGallery() {
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            type = "image/*"
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+
+    private fun retryStartPreviewWithBackoff(attempt: Int = 1) {
+        val delay = when (attempt) {
+            1 -> 200L; 2 -> 400L; else -> 700L
         }
-        startActivity(intent)
+        previewView.postDelayed({
+            try {
+                previewView.invalidate()
+                previewView.requestLayout()
+
+                startPreviewInActivity()
+                Log.d("MainActivity", "Preview reanudada en intento $attempt")
+                unlockOrientation()
+            } catch (e: Exception) {
+                Log.e(
+                    "MainActivity", "Fallo al reanudar preview (intento $attempt): ${e.message}", e
+                )
+                if (attempt < 3) retryStartPreviewWithBackoff(attempt + 1) else unlockOrientation()
+            }
+        }, delay)
     }
 
-    /** Actualiza la UI según estemos en modo foto o video */
+    private fun openGallery() {
+        val galleryIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_APP_GALLERY)
+        }
+        try {
+            startActivity(galleryIntent)
+            return
+        } catch (_: Exception) { }
+
+        val imagesUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        val viewMediaIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(imagesUri, "image/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivity(viewMediaIntent)
+            return
+        } catch (_: Exception) { }
+
+        val docIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }
+        try {
+            startActivity(docIntent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No hay app de galería disponible", Toast.LENGTH_SHORT).show()
+            Log.e("MainActivity", "No se pudo abrir la galería: ${e.message}", e)
+        }
+    }
+
+    // Actualiza la UI segun estemos en modo foto o video
     private fun updateUIForMode() {
         if (isPhotoMode) {
             btnCapture.setImageResource(R.drawable.ic_photo)
@@ -510,10 +608,8 @@ class MainActivity : AppCompatActivity(), SettingsDialogFragment.OnSettingsSaved
     }
 
     private fun lockCurrentOrientation() {
-        // Detecta la orientación actual (portrait u horizontal)
         val orientation = resources.configuration.orientation
 
-        // Si está en portrait (vertical)
         requestedOrientation = if (orientation == Configuration.ORIENTATION_PORTRAIT) {
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {

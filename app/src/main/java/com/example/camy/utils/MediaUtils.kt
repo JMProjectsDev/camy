@@ -9,7 +9,7 @@ import androidx.documentfile.provider.DocumentFile
 import java.io.InputStream
 import java.io.OutputStream
 
-fun createMediaContentValues(type: String, storageChoice: String): ContentValues {
+fun createMediaContentValues(type: String): ContentValues {
     val dateSys = System.currentTimeMillis()
     val actualDate = getCurrentDate()
     val displayName = if (type == "image") {
@@ -17,11 +17,7 @@ fun createMediaContentValues(type: String, storageChoice: String): ContentValues
     } else {
         "video_${dateSys}_${actualDate}.mp4"
     }
-    val relativePath = if (type == "image") {
-        if (storageChoice == "external") "Pictures/Camy-Pictures-Ext" else "Pictures/Camy-Pictures"
-    } else {
-        if (storageChoice == "external") "Movies/Camy-Videos-Ext" else "Movies/Camy-Videos"
-    }
+    val relativePath = if (type == "image") "Pictures/Camy-Pictures" else "Movies/Camy-Videos"
 
     return ContentValues().apply {
         put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, displayName)
@@ -47,21 +43,6 @@ fun copyStream(input: InputStream, output: OutputStream) {
     Log.d("copyStream", "Total bytes copiados: $totalBytes")
 }
 
-
-fun getRemovableSDTreeUri(context: Context): Uri? {
-    val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
-    val volumes = sm.storageVolumes
-    for (volume in volumes) {
-        if (volume.isRemovable && !volume.isPrimary) {
-            val uuid = volume.uuid
-            if (!uuid.isNullOrEmpty()) {
-                return Uri.parse("content://com.android.externalstorage.documents/tree/${uuid}%3A")
-            }
-        }
-    }
-    return null
-}
-
 fun getOrCreateDefaultFolder(context: Context, treeUri: Uri, folderName: String): DocumentFile? {
     val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return null
     var folder = rootDoc.findFile(folderName)
@@ -70,7 +51,3 @@ fun getOrCreateDefaultFolder(context: Context, treeUri: Uri, folderName: String)
     }
     return folder
 }
-
-
-
-
